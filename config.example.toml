@@ -1,0 +1,20 @@
+# Modex 配置。
+# 身份名称可自行命名；工具不会硬编码这些名称。
+
+[codex]
+binary = "codex"
+app_name = "Codex"
+source_home = "~/.codex"
+poll_seconds = 60
+
+[identities.enterprise]
+codex_home = "~/.codex-enterprise"
+monitor = false
+
+[identities.business-a]
+codex_home = "~/.codex-business-a"
+monitor = true
+
+[identities.business-b]
+codex_home = "~/.codex-business-b"
+monitor = true
