@@ -107,6 +107,13 @@ class GuiViewModel:
         self.is_dirty = True
 
     def add_identity(self, identity: AppIdentity) -> None:
+        existing_name = self._identity_name_for_home(identity.codex_home)
+        if existing_name is not None:
+            self.selected_identity_name = existing_name
+            existing_identity = self.identity_named(existing_name)
+            if _has_local_auth(existing_identity) or _has_local_auth(identity):
+                self._mark_logged_in(existing_name)
+            return
         identity = self._identity_with_auth_name(identity)
         self._ensure_unique_identity_name(identity.name)
         self.settings.identities.append(identity)
@@ -351,16 +358,22 @@ class GuiViewModel:
             return f"错误：{display.error}"
         if display.is_unknown:
             return display.status
-        return f"{display.status} · {display.plan} · {display.primary_label} · {display.secondary_label}"
+        parts = [display.status, display.plan]
+        if display.primary_label:
+            parts.append(display.primary_label)
+        if display.secondary_label:
+            parts.append(display.secondary_label)
+        return " · ".join(parts)
 
     def quota_display(self, identity_name: str) -> QuotaDisplay:
         if identity_name in self.errors:
+            is_free_plan = self._plan_label_for_identity(identity_name) == "免费版"
             return QuotaDisplay(
                 status="错误",
                 plan=self._plan_label_for_identity(identity_name),
-                primary_label="5小时已用 -",
+                primary_label="每周已用 -" if is_free_plan else "5小时已用 -",
                 primary_percent=0,
-                secondary_label="每周已用 -",
+                secondary_label="" if is_free_plan else "每周已用 -",
                 secondary_percent=0,
                 credits="额度未知",
                 is_unknown=True,
@@ -368,18 +381,26 @@ class GuiViewModel:
             )
         snapshot = self.snapshots.get(identity_name)
         if snapshot is None:
+            is_free_plan = self._plan_label_for_identity(identity_name) == "免费版"
             return QuotaDisplay(
                 status="未检查",
                 plan=self._plan_label_for_identity(identity_name),
-                primary_label="5小时已用 -",
+                primary_label="每周已用 -" if is_free_plan else "5小时已用 -",
                 primary_percent=0,
-                secondary_label="每周已用 -",
+                secondary_label="" if is_free_plan else "每周已用 -",
                 secondary_percent=0,
                 credits="额度未知",
                 is_unknown=True,
             )
-        primary_label, primary_percent = _window_display("5小时", snapshot.primary)
-        secondary_label, secondary_percent = _window_display("每周", snapshot.secondary)
+        if _is_free_plan(snapshot.plan_type):
+            primary_label, primary_percent = _window_display("每周", snapshot.secondary or snapshot.primary)
+            secondary_label, secondary_percent = "", 0
+        elif _is_enterprise_plan(snapshot.plan_type) and snapshot.primary is None and snapshot.secondary is None:
+            primary_label, primary_percent = "", 0
+            secondary_label, secondary_percent = "", 0
+        else:
+            primary_label, primary_percent = _window_display("5小时", snapshot.primary)
+            secondary_label, secondary_percent = _window_display("每周", snapshot.secondary)
         status = "受限" if snapshot.is_limited else "可用"
         return QuotaDisplay(
             status=status,
@@ -394,10 +415,13 @@ class GuiViewModel:
 
     def _notify_quota_recovery(self, identity_name: str) -> None:
         display = self.quota_display(identity_name)
-        message = (
-            f"{identity_name}: {display.plan} · {display.status} · "
-            f"{display.primary_label} · {display.secondary_label} · {display.credits}"
-        )
+        quota_parts = []
+        if display.primary_label:
+            quota_parts.append(display.primary_label)
+        if display.secondary_label:
+            quota_parts.append(display.secondary_label)
+        parts = [display.plan, display.status, *quota_parts, display.credits]
+        message = f"{identity_name}: {' · '.join(parts)}"
         self.notifier("Codex 配额已恢复", message)
 
     def _identity_index(self, name: str) -> int:
@@ -728,7 +752,20 @@ def _plan_label(plan_type: Optional[str]) -> str:
         return "团队版"
     if normalized in {"pro", "plus"}:
         return "个人版"
+    if normalized == "free":
+        return "免费版"
     return plan_type
+
+
+def _is_free_plan(plan_type: Optional[str]) -> bool:
+    return bool(plan_type) and plan_type.lower() == "free"
+
+
+def _is_enterprise_plan(plan_type: Optional[str]) -> bool:
+    if not plan_type:
+        return False
+    normalized = plan_type.lower()
+    return "business" in normalized or normalized in {"enterprise", "enterprise_plus"}
 
 
 def _reset_time_label(resets_at: object) -> Optional[str]:

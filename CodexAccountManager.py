@@ -70,6 +70,9 @@ class ModexApp(tk.Tk):
         self.background_results: queue.Queue[tuple[Callable[[object], None], object]] = queue.Queue()
         self.identity_status_vars: dict[str, tk.StringVar] = {}
         self.identity_rows: dict[str, IdentityRow] = {}
+        self._identity_canvas: Optional[tk.Canvas] = None
+        self._identity_rows_frame: Optional[ttk.Frame] = None
+        self._identity_mousewheel_bound = False
         self.last_check_var = tk.StringVar(value=self.model.last_check_label)
         self.notification_var = tk.StringVar(value="点击“新增账号”开始登录。")
         self._build_menu()
@@ -125,19 +128,21 @@ class ModexApp(tk.Tk):
 
         self.identities_frame = ttk.LabelFrame(root, text="账号", padding=12)
         self.identities_frame.grid(row=1, column=0, sticky="nsew")
-        self.identities_frame.columnconfigure(2, weight=1)
-        self.identities_frame.columnconfigure(3, weight=1)
+        self.identities_frame.columnconfigure(0, weight=1)
+        self.identities_frame.rowconfigure(1, weight=1)
         self._render_identities()
 
     def _render_identities(self) -> None:
         self.model.refresh_current_identity()
         for child in self.identities_frame.winfo_children():
             child.destroy()
+        self._identity_canvas = None
+        self._identity_rows_frame = None
         self.identity_status_vars.clear()
         self.identity_rows.clear()
 
         actions = ttk.Frame(self.identities_frame)
-        actions.grid(row=0, column=0, columnspan=7, sticky="ew", pady=(0, 12))
+        actions.grid(row=0, column=0, sticky="ew", pady=(0, 12))
         actions.columnconfigure(5, weight=1)
         ttk.Button(actions, text="新增账号", command=self._add_account).grid(row=0, column=0)
         ttk.Button(actions, text="全部刷新", command=self._refresh_all_async).grid(
@@ -153,23 +158,25 @@ class ModexApp(tk.Tk):
             sticky="e",
         )
 
+        rows_parent = self._build_identity_rows_container()
+
         if not self.settings.identities:
             ttk.Label(
-                self.identities_frame,
+                rows_parent,
                 text="暂无账号。点击“新增账号”完成登录后，账号会出现在这里。",
                 foreground="#666666",
-            ).grid(row=1, column=0, columnspan=7, sticky="w", pady=(12, 0))
+            ).grid(row=0, column=0, columnspan=7, sticky="w", pady=(12, 0))
             return
 
-        ttk.Label(self.identities_frame, text="当前").grid(row=1, column=0, sticky="w")
-        ttk.Label(self.identities_frame, text="账号").grid(row=1, column=1, sticky="w")
-        ttk.Label(self.identities_frame, text="配额").grid(row=1, column=2, sticky="w")
-        ttk.Label(self.identities_frame, text="状态").grid(row=1, column=3, sticky="w")
-        ttk.Label(self.identities_frame, text="操作").grid(row=1, column=4, columnspan=3, sticky="w")
+        ttk.Label(rows_parent, text="当前").grid(row=0, column=0, sticky="w")
+        ttk.Label(rows_parent, text="账号").grid(row=0, column=1, sticky="w")
+        ttk.Label(rows_parent, text="配额").grid(row=0, column=2, sticky="w")
+        ttk.Label(rows_parent, text="状态").grid(row=0, column=3, sticky="w")
+        ttk.Label(rows_parent, text="操作").grid(row=0, column=4, columnspan=3, sticky="w")
         for index, identity in enumerate(self.settings.identities):
-            row = 2 + index * 2
+            row = 1 + index * 2
             if index > 0:
-                ttk.Separator(self.identities_frame, orient="horizontal").grid(
+                ttk.Separator(rows_parent, orient="horizontal").grid(
                     row=row - 1,
                     column=0,
                     columnspan=7,
@@ -182,14 +189,14 @@ class ModexApp(tk.Tk):
             is_current = self.model.is_current_identity(identity.name)
             current_var = tk.StringVar(value="当前" if is_current else "")
             current_label = ttk.Label(
-                self.identities_frame,
+                rows_parent,
                 textvariable=current_var,
                 foreground="#0b63ce" if is_current else "#666666",
             )
             current_label.grid(row=row, column=0, sticky="w", pady=6)
             name_var = tk.StringVar(value=identity.name)
             name_label = ttk.Label(
-                self.identities_frame,
+                rows_parent,
                 textvariable=name_var,
                 font=("Helvetica", 13, "bold"),
                 foreground="#0b63ce" if is_current else "#1f1f1f",
@@ -203,17 +210,17 @@ class ModexApp(tk.Tk):
             quota_widget = self._render_quota_cell(row, 2, identity.name)
             login_widget = self._render_login_state_cell(row, 3, identity)
             ttk.Button(
-                self.identities_frame,
+                rows_parent,
                 text="切换账号",
                 command=lambda name=identity.name: self._switch_identity(name),
             ).grid(row=row, column=4)
             ttk.Button(
-                self.identities_frame,
+                rows_parent,
                 text="配置目录",
                 command=lambda name=identity.name: self._open_identity_directory(name),
             ).grid(row=row, column=5, padx=(4, 0))
             ttk.Button(
-                self.identities_frame,
+                rows_parent,
                 text="删除",
                 command=lambda name=identity.name: self._delete_identity(name),
             ).grid(row=row, column=6, padx=(4, 0))
@@ -226,6 +233,53 @@ class ModexApp(tk.Tk):
                 quota_widget=quota_widget,
                 login_widget=login_widget,
             )
+
+    def _build_identity_rows_container(self) -> ttk.Frame:
+        canvas = tk.Canvas(self.identities_frame, highlightthickness=0)
+        canvas.grid(row=1, column=0, sticky="nsew")
+
+        rows_frame = ttk.Frame(canvas)
+        rows_frame.columnconfigure(2, weight=1)
+        rows_frame.columnconfigure(3, weight=1)
+        window_id = canvas.create_window((0, 0), window=rows_frame, anchor="nw")
+
+        def update_scroll_region(_event: tk.Event) -> None:
+            canvas.configure(scrollregion=canvas.bbox("all"))
+
+        def stretch_rows(event: tk.Event) -> None:
+            canvas.itemconfigure(window_id, width=event.width)
+
+        rows_frame.bind("<Configure>", update_scroll_region)
+        canvas.bind("<Configure>", stretch_rows)
+        if not self._identity_mousewheel_bound:
+            self.bind_all("<MouseWheel>", self._scroll_identity_rows, add="+")
+            self._identity_mousewheel_bound = True
+
+        self._identity_canvas = canvas
+        self._identity_rows_frame = rows_frame
+        return rows_frame
+
+    def _identity_rows_parent(self) -> tk.Widget:
+        return self._identity_rows_frame or self.identities_frame
+
+    def _is_pointer_over_identity_rows(self) -> bool:
+        if self._identity_canvas is None:
+            return False
+        pointer_x = self.winfo_pointerx()
+        pointer_y = self.winfo_pointery()
+        left = self._identity_canvas.winfo_rootx()
+        top = self._identity_canvas.winfo_rooty()
+        right = left + self._identity_canvas.winfo_width()
+        bottom = top + self._identity_canvas.winfo_height()
+        return left <= pointer_x <= right and top <= pointer_y <= bottom
+
+    def _scroll_identity_rows(self, event: tk.Event) -> Optional[str]:
+        if self._identity_canvas is None or event.delta == 0:
+            return None
+        if not self._is_pointer_over_identity_rows():
+            return None
+        self._identity_canvas.yview_scroll(-1 if event.delta > 0 else 1, "units")
+        return "break"
 
     def _refresh_identity_rows(self) -> None:
         self.model.refresh_current_identity()
@@ -246,8 +300,9 @@ class ModexApp(tk.Tk):
             row.login_widget = self._render_login_state_cell(row.row, 3, identity)
 
     def _render_login_state_cell(self, row: int, column: int, identity: AppIdentity) -> tk.Widget:
+        parent = self._identity_rows_parent()
         if self.model.is_login_expired_identity(identity.name):
-            frame = ttk.Frame(self.identities_frame)
+            frame = ttk.Frame(parent)
             frame.grid(row=row, column=column, padx=(10, 4), sticky="w")
             ttk.Label(frame, text="登录过期", foreground="#b42318").grid(
                 row=0,
@@ -262,14 +317,14 @@ class ModexApp(tk.Tk):
             return frame
         if self.model.is_logged_in_identity(identity.name):
             label = ttk.Label(
-                self.identities_frame,
+                parent,
                 text="已登录",
                 foreground="#067647",
             )
             label.grid(row=row, column=column, padx=(10, 4), sticky="w")
             return label
         button = ttk.Button(
-            self.identities_frame,
+            parent,
             text="登录",
             command=lambda name=identity.name: self._login(name),
         )
@@ -278,7 +333,7 @@ class ModexApp(tk.Tk):
 
     def _render_quota_cell(self, row: int, column: int, identity_name: str) -> tk.Widget:
         display = self.model.quota_display(identity_name)
-        frame = ttk.Frame(self.identities_frame)
+        frame = ttk.Frame(self._identity_rows_parent())
         frame.grid(row=row, column=column, sticky="ew", padx=(0, 10), pady=4)
         frame.columnconfigure(1, weight=1)
 
@@ -302,10 +357,15 @@ class ModexApp(tk.Tk):
             )
             return frame
 
-        self._quota_progress(frame, 1, display.primary_label, display.primary_percent)
-        self._quota_progress(frame, 2, display.secondary_label, display.secondary_percent)
+        credits_row = 1
+        if display.primary_label:
+            self._quota_progress(frame, 1, display.primary_label, display.primary_percent)
+            credits_row = 2
+        if display.secondary_label:
+            self._quota_progress(frame, credits_row, display.secondary_label, display.secondary_percent)
+            credits_row += 1
         ttk.Label(frame, text=display.credits, foreground="#667085").grid(
-            row=3,
+            row=credits_row,
             column=0,
             columnspan=2,
             sticky="w",
@@ -320,13 +380,30 @@ class ModexApp(tk.Tk):
             sticky="w",
             pady=(2, 0),
         )
-        ttk.Progressbar(parent, maximum=100, value=percent, length=135).grid(
-            row=row,
-            column=1,
-            sticky="ew",
-            padx=(8, 0),
-            pady=(2, 0),
+        self._used_quota_bar(parent, row, 1, percent)
+
+    def _used_quota_bar(self, parent: ttk.Frame, row: int, column: int, percent: int) -> None:
+        width = 135
+        height = 12
+        value = max(0, min(100, percent))
+        fill_width = int(width * value / 100)
+        canvas = tk.Canvas(
+            parent,
+            width=width,
+            height=height,
+            highlightthickness=0,
+            background="#eaecf0",
         )
+        canvas.grid(row=row, column=column, sticky="w", padx=(8, 0), pady=(2, 0))
+        canvas.create_rectangle(0, 2, width, height - 2, fill="#eaecf0", outline="")
+        if fill_width <= 0:
+            return
+        color = "#2e90fa"
+        if value >= 90:
+            color = "#d92d20"
+        elif value >= 70:
+            color = "#f79009"
+        canvas.create_rectangle(0, 2, fill_width, height - 2, fill=color, outline="")
 
     def _show_settings_dialog(self) -> None:
         SettingsDialog(self, on_save=self._settings_saved)
@@ -536,7 +613,7 @@ class ModexApp(tk.Tk):
     def _initial_refresh_all_async(self) -> None:
         if not self.settings.identities:
             return
-        self.notification_var.set("正在刷新配额...")
+        self._show_loading("正在刷新配额...")
         self._run_background(self._refresh_all_work, self._after_initial_refresh)
 
     def _refresh_all_async(self) -> None:
@@ -556,6 +633,7 @@ class ModexApp(tk.Tk):
         self._schedule_monitor_tick()
 
     def _after_initial_refresh(self, result: object) -> None:
+        self._hide_loading()
         self._after_refresh(result)
         self._schedule_monitor_tick()
 

@@ -484,6 +484,60 @@ class GuiViewModelTests(unittest.TestCase):
 
         self.assertEqual(display.plan, "企业版")
 
+    def test_enterprise_plan_without_windows_hides_quota_limits(self):
+        model = GuiViewModel(self.make_settings())
+        model.snapshots["Business A"] = QuotaSnapshot(
+            identity="Business A",
+            plan_type="business",
+            primary=None,
+            secondary=None,
+            credits_has_credits=True,
+            credits_unlimited=False,
+            reached_type=None,
+        )
+
+        display = model.quota_display("Business A")
+
+        self.assertEqual(display.primary_label, "")
+        self.assertEqual(display.secondary_label, "")
+        self.assertNotIn("5小时", model.quota_label("Business A"))
+        self.assertNotIn("每周", model.quota_label("Business A"))
+
+    def test_free_plan_type_displays_free_plan(self):
+        model = GuiViewModel(self.make_settings())
+        model.snapshots["Business A"] = QuotaSnapshot(
+            identity="Business A",
+            plan_type="free",
+            primary=None,
+            secondary=None,
+            credits_has_credits=False,
+            credits_unlimited=False,
+            reached_type=None,
+        )
+
+        display = model.quota_display("Business A")
+
+        self.assertEqual(display.plan, "免费版")
+
+    def test_free_plan_displays_single_weekly_window(self):
+        model = GuiViewModel(self.make_settings())
+        model.snapshots["Business A"] = QuotaSnapshot(
+            identity="Business A",
+            plan_type="free",
+            primary=RateWindow(37, None, 10080),
+            secondary=None,
+            credits_has_credits=False,
+            credits_unlimited=False,
+            reached_type=None,
+        )
+
+        display = model.quota_display("Business A")
+
+        self.assertEqual(display.primary_label, "每周已用 37%")
+        self.assertEqual(display.primary_percent, 37)
+        self.assertEqual(display.secondary_label, "")
+        self.assertNotIn("5小时", model.quota_label("Business A"))
+
     def test_enterprise_name_without_plan_remains_unknown(self):
         model = GuiViewModel(self.make_settings())
         model.snapshots["Enterprise"] = QuotaSnapshot(
@@ -631,6 +685,29 @@ codex 123 yaoji 11u REG 1,18 100 /Users/alex/.codex/logs_2.sqlite
 
             self.assertEqual(settings.identities[0].name, "yaoji+1@example.com · 团队版")
             self.assertEqual(model.selected_identity_name, "yaoji+1@example.com · 团队版")
+
+    def test_add_identity_with_existing_auth_selects_existing_without_adding(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            existing_home = root / "existing"
+            duplicate_home = root / "duplicate"
+            existing_home.mkdir()
+            duplicate_home.mkdir()
+            auth = auth_json("yaoji@example.com", "user-yaoji", "acct-team", "team")
+            (existing_home / "auth.json").write_text(auth)
+            (duplicate_home / "auth.json").write_text(auth)
+            settings = AppSettings(
+                source_home=root / "source",
+                has_completed_setup=True,
+                identities=[AppIdentity("yaoji@example.com · 团队版", existing_home, True)],
+            )
+            model = GuiViewModel(settings)
+
+            model.add_identity(AppIdentity("登录中", duplicate_home, True))
+
+            self.assertEqual(len(settings.identities), 1)
+            self.assertEqual(settings.identities[0].codex_home, existing_home)
+            self.assertEqual(model.selected_identity_name, "yaoji@example.com · 团队版")
 
     def test_existing_identity_names_refresh_from_auth_without_custom_names(self):
         with tempfile.TemporaryDirectory() as tmp:
