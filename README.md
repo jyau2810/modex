@@ -6,19 +6,37 @@ Modex 是一个本地 macOS 图形界面应用，用于管理多个 Codex ChatGP
 
 ## 运行
 
-构建并打开本地应用：
+打开已经打包好的本地应用：
 
 ```bash
 ./app.sh
 ```
 
-如需只构建本地应用：
+如果 `dist/Modex.app` 已存在，`./app.sh` 会直接打开它，不需要安装 Python、Tk、uv 或其他构建环境。
+
+## 构建
+
+从源码重新构建本地应用：
 
 ```bash
-python3 scripts/build_app.py --output-dir dist
+MODEX_FORCE_BUILD=1 ./app.sh
 ```
 
-应用使用 Tkinter。构建脚本会自动选择当前机器上可正常创建 Tk 窗口的 Python；如需手动指定，可设置 `MODEX_PYTHON=/path/to/python3`。
+应用使用 PyInstaller 打包，运行时不依赖系统 Python/Tk。仅构建时需要开发工具：
+
+```bash
+brew install uv
+```
+
+构建时，脚本会自动在仓库内创建并复用 `.venv-build`（默认 Python 3.12）并安装 `requirements-dev.txt`。
+
+给其他机器使用时，分发构建后的 `dist/Modex.app` 即可；对方只运行 app，不需要安装构建工具。
+
+如需手动指定构建 Python，可设置：
+
+```bash
+MODEX_PYTHON=/path/to/python3 ./app.sh
+```
 
 ## 首次设置
 
