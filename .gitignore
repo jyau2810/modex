@@ -4,6 +4,9 @@ __pycache__/
 .pytest_cache/
 .coverage
 .venv-build/
+node_modules/
+src-tauri/gen/
+src-tauri/target/
 
 dist/
 build/

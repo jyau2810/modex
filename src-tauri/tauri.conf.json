@@ -1,0 +1,39 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Modex",
+  "version": "0.1.0",
+  "identifier": "local.modex",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Modex",
+        "width": 1180,
+        "height": 740,
+        "minWidth": 420,
+        "minHeight": 460,
+        "visible": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "category": "DeveloperTool",
+    "icon": [
+      "icons/icon.icns",
+      "icons/icon.png"
+    ],
+    "shortDescription": "Codex multi-account switcher",
+    "longDescription": "Cross-platform tray account switcher and quota dashboard for Codex."
+  }
+}
