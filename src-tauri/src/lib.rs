@@ -1,5 +1,6 @@
 mod commands;
 pub mod core;
+mod notifications;
 mod tray;
 
 use tauri::Manager;

@@ -310,9 +310,15 @@ impl AppEngine {
     pub fn set_snapshot(&mut self, name: &str, snapshot: QuotaSnapshot) {
         self.snapshots.insert(name.to_string(), snapshot);
         self.errors.remove(name);
+        self.expired_identity_names.remove(name);
     }
 
     pub fn set_error(&mut self, name: &str, error: String) {
+        if is_login_expired_error(&error) {
+            self.expired_identity_names.insert(name.to_string());
+        } else {
+            self.expired_identity_names.remove(name);
+        }
         self.errors.insert(name.to_string(), error);
     }
 
@@ -441,6 +447,19 @@ fn managed_home_root(settings: &AppSettings) -> PathBuf {
         .map(PathBuf::from)
         .or_else(dirs::home_dir)
         .unwrap_or_else(|| PathBuf::from("."))
+}
+
+fn is_login_expired_error(error: &str) -> bool {
+    let lower = error.to_ascii_lowercase();
+    error.contains("账号缺少登录凭据")
+        || lower.contains("missing login")
+        || lower.contains("missing auth")
+        || lower.contains("not logged in")
+        || lower.contains("not authenticated")
+        || lower.contains("unauthorized")
+        || lower.contains("401")
+        || (lower.contains("login") && (lower.contains("expired") || lower.contains("required")))
+        || (lower.contains("auth") && (lower.contains("expired") || lower.contains("required")))
 }
 
 fn copy_source_auth_to_identity_home(

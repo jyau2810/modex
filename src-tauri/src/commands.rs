@@ -12,6 +12,9 @@ use crate::core::engine::{
     ActionResult, AppEngine, AppViewState, IdentityView, ImportIdentityResult, SettingsPatch,
 };
 use crate::core::quota::QuotaSnapshot;
+use crate::notifications::{
+    refresh_notifications, send_notification, send_notifications, switch_success_notification,
+};
 
 pub const STATE_UPDATED_EVENT: &str = "modex://state-updated";
 pub const REFRESH_STARTED_EVENT: &str = "modex://refresh-started";
@@ -94,7 +97,7 @@ pub fn switch_identity(
     state: State<'_, ModexState>,
     name: String,
 ) -> Result<ActionResult, String> {
-    let result = with_engine(&state, |engine| engine.switch_identity(&name))?;
+    let result = switch_identity_with_notifications(&app, &state, &name)?;
     refresh_tray(&app);
     Ok(result)
 }
@@ -118,12 +121,14 @@ pub fn refresh_identity(
 ) -> Result<IdentityView, String> {
     let identity = match state.try_begin_refresh() {
         Some(guard) => {
+            let before = current_identity_views(&state)?;
             emit_refresh_started(&app);
             refresh_tray(&app);
             let result = refresh_identity_with_guard(&state, guard, &name);
             refresh_tray(&app);
             emit_refresh_finished(&app);
             let identity = result?;
+            send_refresh_notifications(&app, &before, std::slice::from_ref(&identity));
             emit_state_updated(&app);
             identity
         }
@@ -146,12 +151,14 @@ pub fn refresh_all(
 ) -> Result<Vec<IdentityView>, String> {
     let identities = match state.try_begin_refresh() {
         Some(guard) => {
+            let before = current_identity_views(&state)?;
             emit_refresh_started(&app);
             refresh_tray(&app);
             let result = refresh_all_with_guard(&state, guard);
             refresh_tray(&app);
             emit_refresh_finished(&app);
             let identities = result?;
+            send_refresh_notifications(&app, &before, &identities);
             emit_state_updated(&app);
             identities
         }
@@ -192,6 +199,31 @@ pub fn open_identity_directory(
 pub fn open_main_window(app: AppHandle) -> Result<(), String> {
     show_main_window(&app);
     Ok(())
+}
+
+pub fn switch_identity_with_notifications(
+    app: &AppHandle,
+    state: &ModexState,
+    name: &str,
+) -> Result<ActionResult, String> {
+    let (result, switched) = {
+        let mut engine = state
+            .engine
+            .lock()
+            .map_err(|_| "Modex state lock poisoned".to_string())?;
+        let before = engine.settings().current_identity_name.clone();
+        let result = engine
+            .switch_identity(name)
+            .map_err(|error| error.to_string())?;
+        let after = engine.settings().current_identity_name.clone();
+        let switched =
+            result.ok && before.as_deref() != Some(name) && after.as_deref() == Some(name);
+        (result, switched)
+    };
+    if switched {
+        send_notification(app, &switch_success_notification(name));
+    }
+    Ok(result)
 }
 
 pub fn show_main_window(app: &AppHandle) {
@@ -330,11 +362,15 @@ pub fn start_refresh_all_with_events(app: AppHandle, source: &'static str) {
             let _ = refresh_tray(&app);
             return;
         };
+        let before = current_identity_views(&state).unwrap_or_default();
 
         emit_refresh_started(&app);
         let _ = refresh_tray(&app);
         let refreshed = match refresh_all_with_guard(&state, guard) {
-            Ok(_) => true,
+            Ok(identities) => {
+                send_refresh_notifications(&app, &before, &identities);
+                true
+            }
             Err(error) => {
                 eprintln!("modex {source} refresh failed: {error}");
                 false
@@ -355,8 +391,12 @@ pub fn start_background_monitor(app: AppHandle) {
 
         let refreshed = {
             let state = app.state::<ModexState>();
+            let before = current_identity_views(&state).unwrap_or_default();
             match refresh_all_if_idle(&state) {
-                Ok(Some(_)) => true,
+                Ok(Some(identities)) => {
+                    send_refresh_notifications(&app, &before, &identities);
+                    true
+                }
                 Ok(None) => false,
                 Err(error) => {
                     eprintln!("modex background refresh failed: {error}");
@@ -374,6 +414,18 @@ pub fn start_background_monitor(app: AppHandle) {
 
 fn refresh_tray(app: &AppHandle) {
     let _ = crate::tray::refresh_menu(app);
+}
+
+fn send_refresh_notifications(app: &AppHandle, before: &[IdentityView], after: &[IdentityView]) {
+    send_notifications(app, &refresh_notifications(before, after));
+}
+
+fn current_identity_views(state: &ModexState) -> Result<Vec<IdentityView>, String> {
+    state
+        .engine
+        .lock()
+        .map_err(|_| "Modex state lock poisoned".to_string())
+        .map(|engine| engine.app_state().identities)
 }
 
 fn poll_seconds(app: &AppHandle) -> u64 {
@@ -586,6 +638,31 @@ mod tests {
             .unwrap();
         assert!(!team.is_current);
         assert!(backup.is_current);
+    }
+
+    #[test]
+    fn refresh_all_with_reader_marks_missing_auth_as_login_expired() {
+        let temp = assert_fs::TempDir::new().unwrap();
+        let mut settings = AppSettings::default_for_home(temp.path().to_path_buf());
+        settings.identities.push(AppIdentity {
+            name: "Expired".to_string(),
+            codex_home: temp.path().join(".modex/expired"),
+            monitor: false,
+            workspace_id: None,
+        });
+        let state = ModexState::new(AppEngine::new(settings, temp.path().join("config.json")));
+        let guard = state.try_begin_refresh().unwrap();
+
+        let refreshed = refresh_all_with_reader(&state, guard, |_settings, _identity| {
+            Err(ModexError::from(
+                "账号缺少登录凭据：/tmp/.modex/expired/auth.json",
+            ))
+        })
+        .unwrap();
+
+        assert!(refreshed[0].login_expired);
+        assert!(!refreshed[0].logged_in);
+        assert_eq!(refreshed[0].quota.status, "error");
     }
 
     #[test]

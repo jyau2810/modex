@@ -140,8 +140,10 @@ fn handle_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
         _ if id.starts_with(IDENTITY_PREFIX) => {
             let name = id.trim_start_matches(IDENTITY_PREFIX);
             let state = app.state::<ModexState>();
-            if let Ok(mut engine) = state.engine.lock() {
-                let _ = engine.switch_identity(name);
+            if let Err(error) =
+                crate::commands::switch_identity_with_notifications(app, &state, name)
+            {
+                eprintln!("modex tray switch failed: {error}");
             }
             let _ = refresh_menu(app);
             crate::commands::emit_state_updated(app);
