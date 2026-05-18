@@ -2,6 +2,9 @@ use assert_fs::prelude::*;
 use modex_lib::core::app_config::AppSettings;
 use modex_lib::core::codex::{open_codex_app_launch_command, resolve_codex_binary_with};
 
+#[cfg(target_os = "macos")]
+use modex_lib::core::codex::macos_quit_codex_app_script;
+
 #[test]
 fn resolves_codex_to_app_cli_when_path_lookup_fails() {
     let temp = assert_fs::TempDir::new().unwrap();
@@ -31,4 +34,16 @@ fn macos_switch_launches_codex_app_without_creating_a_project() {
     assert_eq!(command.program.to_string_lossy(), "open");
     assert_eq!(command.args, vec!["-a".to_string(), "Codex".to_string()]);
     assert!(command.envs.is_empty());
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_quit_script_waits_until_codex_has_stopped_before_reopening() {
+    let script = macos_quit_codex_app_script("Codex");
+
+    assert!(script.contains(r#"if application "Codex" is running then"#));
+    assert!(script.contains(r#"tell application "Codex" to quit"#));
+    assert!(script.contains("repeat with _attempt in 1 to 50"));
+    assert!(script.contains(r#"if application "Codex" is not running then exit repeat"#));
+    assert!(script.contains("delay 0.1"));
 }

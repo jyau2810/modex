@@ -48,15 +48,25 @@ pub fn open_codex_app(settings: &AppSettings, identity: &AppIdentity) -> ModexRe
     {
         let _ = Command::new("osascript")
             .arg("-e")
-            .arg(format!(
-                r#"tell application "{}" to quit"#,
-                settings.app_name.replace('\\', "\\\\").replace('"', "\\\"")
-            ))
+            .arg(macos_quit_codex_app_script(&settings.app_name))
             .status();
-        std::thread::sleep(Duration::from_secs(1));
     }
     spawn_program(open_codex_app_launch_command(settings))?;
     Ok(())
+}
+
+#[cfg(target_os = "macos")]
+pub fn macos_quit_codex_app_script(app_name: &str) -> String {
+    let app_name = escape_applescript_string(app_name);
+    format!(
+        r#"if application "{app_name}" is running then
+	tell application "{app_name}" to quit
+	repeat with _attempt in 1 to 50
+		if application "{app_name}" is not running then exit repeat
+		delay 0.1
+	end repeat
+end if"#
+    )
 }
 
 pub fn open_codex_app_launch_command(settings: &AppSettings) -> ProgramInvocation {
@@ -298,5 +308,10 @@ fn expand_home(value: &str) -> PathBuf {
 }
 
 fn escape_config_value(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+#[cfg(target_os = "macos")]
+fn escape_applescript_string(value: &str) -> String {
     value.replace('\\', "\\\\").replace('"', "\\\"")
 }
