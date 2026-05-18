@@ -61,7 +61,7 @@ pub fn macos_quit_codex_app_script(app_name: &str) -> String {
     format!(
         r#"if application "{app_name}" is running then
 	tell application "{app_name}" to quit
-	repeat with _attempt in 1 to 50
+	repeat with attempt from 1 to 50
 		if application "{app_name}" is not running then exit repeat
 		delay 0.1
 	end repeat

@@ -43,7 +43,28 @@ fn macos_quit_script_waits_until_codex_has_stopped_before_reopening() {
 
     assert!(script.contains(r#"if application "Codex" is running then"#));
     assert!(script.contains(r#"tell application "Codex" to quit"#));
-    assert!(script.contains("repeat with _attempt in 1 to 50"));
+    assert!(script.contains("repeat with attempt from 1 to 50"));
     assert!(script.contains(r#"if application "Codex" is not running then exit repeat"#));
     assert!(script.contains("delay 0.1"));
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_quit_script_is_valid_applescript() {
+    let script = format!(
+        "if false then\n{}\nend if",
+        macos_quit_codex_app_script("Finder")
+    );
+
+    let output = std::process::Command::new("osascript")
+        .arg("-e")
+        .arg(script)
+        .output()
+        .expect("osascript should be available on macOS");
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
