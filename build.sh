@@ -20,6 +20,24 @@ has_local_tauri_cli() {
     [[ -f "$ROOT_DIR/node_modules/.bin/tauri.ps1" ]]
 }
 
+sign_macos_app() {
+  if [[ "$OS_NAME" != "Darwin" ]] || [[ ! -d "$APP_PATH" ]]; then
+    return
+  fi
+
+  if [[ ! -f "$APP_PATH/Contents/Info.plist" ]] ||
+    [[ ! -x "$APP_PATH/Contents/MacOS/modex" ]]; then
+    return
+  fi
+
+  if ! command -v codesign >/dev/null 2>&1; then
+    printf 'codesign is required to finalize the macOS app bundle, but it was not found in PATH.\n' >&2
+    exit 1
+  fi
+
+  codesign --force --deep --sign - "$APP_PATH"
+}
+
 case "$OS_NAME" in
   Darwin)
     APP_NAME="Modex.app"
@@ -85,5 +103,7 @@ if [[ -n "$OUTPUT_DIR" ]]; then
 
   APP_PATH="$OUTPUT_APP_PATH"
 fi
+
+sign_macos_app
 
 printf 'Built %s\n' "$APP_PATH"

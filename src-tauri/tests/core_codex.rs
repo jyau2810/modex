@@ -46,6 +46,7 @@ fn macos_quit_script_waits_until_codex_has_stopped_before_reopening() {
     assert!(script.contains("repeat with attempt from 1 to 50"));
     assert!(script.contains(r#"if application "Codex" is not running then exit repeat"#));
     assert!(script.contains("delay 0.1"));
+    assert!(script.contains(r#"error "Codex did not quit" number -128"#));
 }
 
 #[cfg(target_os = "macos")]

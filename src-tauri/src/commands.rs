@@ -13,7 +13,8 @@ use crate::core::engine::{
 };
 use crate::core::quota::QuotaSnapshot;
 use crate::notifications::{
-    refresh_notifications, send_notification, send_notifications, switch_success_notification,
+    refresh_notifications, send_notification, send_notifications, switch_failure_notification,
+    switch_success_notification,
 };
 
 pub const STATE_UPDATED_EVENT: &str = "modex://state-updated";
@@ -92,82 +93,83 @@ pub fn delete_identity(
 }
 
 #[tauri::command]
-pub fn switch_identity(
-    app: AppHandle,
-    state: State<'_, ModexState>,
-    name: String,
-) -> Result<ActionResult, String> {
-    let result = switch_identity_with_notifications(&app, &state, &name)?;
-    refresh_tray(&app);
-    Ok(result)
+pub async fn switch_identity(app: AppHandle, name: String) -> Result<ActionResult, String> {
+    run_blocking(move || {
+        let state = app.state::<ModexState>();
+        let result = switch_identity_with_notifications(&app, state.inner(), &name)?;
+        refresh_tray(&app);
+        Ok(result)
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn login_identity(
-    app: AppHandle,
-    state: State<'_, ModexState>,
-    name: String,
-) -> Result<ActionResult, String> {
-    let result = with_engine(&state, |engine| engine.login_identity(&name))?;
-    refresh_tray(&app);
-    Ok(result)
+pub async fn login_identity(app: AppHandle, name: String) -> Result<ActionResult, String> {
+    run_blocking(move || {
+        let state = app.state::<ModexState>();
+        let result = with_engine_ref(state.inner(), |engine| engine.login_identity(&name))?;
+        refresh_tray(&app);
+        Ok(result)
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn refresh_identity(
-    app: AppHandle,
-    state: State<'_, ModexState>,
-    name: String,
-) -> Result<IdentityView, String> {
-    let identity = match state.try_begin_refresh() {
-        Some(guard) => {
-            let before = current_identity_views(&state)?;
-            emit_refresh_started(&app);
-            refresh_tray(&app);
-            let result = refresh_identity_with_guard(&state, guard, &name);
-            refresh_tray(&app);
-            emit_refresh_finished(&app);
-            let identity = result?;
-            send_refresh_notifications(&app, &before, std::slice::from_ref(&identity));
-            emit_state_updated(&app);
-            identity
-        }
-        None => {
-            refresh_tray(&app);
-            current_app_state(&state)?
-                .identities
-                .into_iter()
-                .find(|identity| identity.name == name)
-                .ok_or_else(|| format!("未知身份：{name}"))?
-        }
-    };
-    Ok(identity)
+pub async fn refresh_identity(app: AppHandle, name: String) -> Result<IdentityView, String> {
+    run_blocking(move || {
+        let state = app.state::<ModexState>();
+        let identity = match state.try_begin_refresh() {
+            Some(guard) => {
+                let before = current_identity_views(state.inner())?;
+                emit_refresh_started(&app);
+                refresh_tray(&app);
+                let result = refresh_identity_with_guard(state.inner(), guard, &name);
+                refresh_tray(&app);
+                emit_refresh_finished(&app);
+                let identity = result?;
+                send_refresh_notifications(&app, &before, std::slice::from_ref(&identity));
+                emit_state_updated(&app);
+                identity
+            }
+            None => {
+                refresh_tray(&app);
+                current_app_state(state.inner())?
+                    .identities
+                    .into_iter()
+                    .find(|identity| identity.name == name)
+                    .ok_or_else(|| format!("未知身份：{name}"))?
+            }
+        };
+        Ok(identity)
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn refresh_all(
-    app: AppHandle,
-    state: State<'_, ModexState>,
-) -> Result<Vec<IdentityView>, String> {
-    let identities = match state.try_begin_refresh() {
-        Some(guard) => {
-            let before = current_identity_views(&state)?;
-            emit_refresh_started(&app);
-            refresh_tray(&app);
-            let result = refresh_all_with_guard(&state, guard);
-            refresh_tray(&app);
-            emit_refresh_finished(&app);
-            let identities = result?;
-            send_refresh_notifications(&app, &before, &identities);
-            emit_state_updated(&app);
-            identities
-        }
-        None => {
-            refresh_tray(&app);
-            current_app_state(&state)?.identities
-        }
-    };
-    Ok(identities)
+pub async fn refresh_all(app: AppHandle) -> Result<Vec<IdentityView>, String> {
+    run_blocking(move || {
+        let state = app.state::<ModexState>();
+        let identities = match state.try_begin_refresh() {
+            Some(guard) => {
+                let before = current_identity_views(state.inner())?;
+                emit_refresh_started(&app);
+                refresh_tray(&app);
+                let result = refresh_all_with_guard(state.inner(), guard);
+                refresh_tray(&app);
+                emit_refresh_finished(&app);
+                let identities = result?;
+                send_refresh_notifications(&app, &before, &identities);
+                emit_state_updated(&app);
+                identities
+            }
+            None => {
+                refresh_tray(&app);
+                current_app_state(state.inner())?.identities
+            }
+        };
+        Ok(identities)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -182,17 +184,18 @@ pub fn update_settings(
 }
 
 #[tauri::command]
-pub fn open_identity_directory(
-    state: State<'_, ModexState>,
-    name: String,
-) -> Result<ActionResult, String> {
-    let identity = with_engine(&state, |engine| engine.identity(&name))?;
-    tauri_plugin_opener::open_path(identity.codex_home, None::<&str>)
-        .map_err(|error| error.to_string())?;
-    Ok(ActionResult {
-        ok: true,
-        message: "已打开账号目录".to_string(),
+pub async fn open_identity_directory(app: AppHandle, name: String) -> Result<ActionResult, String> {
+    run_blocking(move || {
+        let state = app.state::<ModexState>();
+        let identity = with_engine_ref(state.inner(), |engine| engine.identity(&name))?;
+        tauri_plugin_opener::open_path(identity.codex_home, None::<&str>)
+            .map_err(|error| error.to_string())?;
+        Ok(ActionResult {
+            ok: true,
+            message: "已打开账号目录".to_string(),
+        })
     })
+    .await
 }
 
 #[tauri::command]
@@ -206,24 +209,34 @@ pub fn switch_identity_with_notifications(
     state: &ModexState,
     name: &str,
 ) -> Result<ActionResult, String> {
-    let (result, switched) = {
+    let result = {
         let mut engine = state
             .engine
             .lock()
             .map_err(|_| "Modex state lock poisoned".to_string())?;
         let before = engine.settings().current_identity_name.clone();
-        let result = engine
+        engine
             .switch_identity(name)
-            .map_err(|error| error.to_string())?;
-        let after = engine.settings().current_identity_name.clone();
-        let switched =
-            result.ok && before.as_deref() != Some(name) && after.as_deref() == Some(name);
-        (result, switched)
+            .map_err(|error| error.to_string())
+            .map(|result| {
+                let after = engine.settings().current_identity_name.clone();
+                let switched =
+                    result.ok && before.as_deref() != Some(name) && after.as_deref() == Some(name);
+                (result, switched)
+            })
     };
-    if switched {
-        send_notification(app, &switch_success_notification(name));
+    match result {
+        Ok((result, switched)) => {
+            if switched {
+                send_notification(app, &switch_success_notification(name));
+            }
+            Ok(result)
+        }
+        Err(reason) => {
+            send_notification(app, &switch_failure_notification(name, &reason));
+            Err(reason)
+        }
     }
-    Ok(result)
 }
 
 pub fn show_main_window(app: &AppHandle) {
@@ -441,6 +454,13 @@ fn with_engine<T>(
     state: &State<'_, ModexState>,
     action: impl FnOnce(&mut AppEngine) -> crate::core::ModexResult<T>,
 ) -> Result<T, String> {
+    with_engine_ref(state.inner(), action)
+}
+
+fn with_engine_ref<T>(
+    state: &ModexState,
+    action: impl FnOnce(&mut AppEngine) -> crate::core::ModexResult<T>,
+) -> Result<T, String> {
     let mut engine = state
         .engine
         .lock()
@@ -468,6 +488,14 @@ fn identity_view_from_engine(engine: &AppEngine, name: &str) -> Result<IdentityV
         .into_iter()
         .find(|identity| identity.name == name)
         .ok_or_else(|| format!("未知身份：{name}"))
+}
+
+async fn run_blocking<T: Send + 'static>(
+    action: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(action)
+        .await
+        .map_err(|error| error.to_string())?
 }
 
 #[cfg(test)]

@@ -285,6 +285,53 @@ describe("App", () => {
     expect(screen.queryByText("正在切换到账号：backup@example.com")).not.toBeInTheDocument();
   });
 
+  it("shows switch loading before invoking the backend switch", async () => {
+    let dialogWasVisibleWhenSwitchStarted = false;
+    mockApi.getAppState.mockResolvedValue(
+      state({
+        identities: state().identities.map((identity) =>
+          identity.name === "backup@example.com" ? { ...identity, loggedIn: true, loginExpired: false } : identity,
+        ),
+      }),
+    );
+    mockApi.switchIdentity.mockImplementation(() => {
+      dialogWasVisibleWhenSwitchStarted = Boolean(screen.queryByRole("dialog", { name: "处理中" }));
+      return new Promise(() => undefined);
+    });
+
+    render(<App />);
+
+    const backupRow = await screen.findByRole("article", { name: /backup@example.com/ });
+    await userEvent.click(within(backupRow).getByRole("button", { name: /切换到 backup@example.com/ }));
+
+    await waitFor(() => expect(mockApi.switchIdentity).toHaveBeenCalledWith("backup@example.com"));
+    expect(dialogWasVisibleWhenSwitchStarted).toBe(true);
+    expect(await screen.findByRole("dialog", { name: "处理中" })).toBeInTheDocument();
+    expect(screen.queryByText("正在切换账号")).not.toBeInTheDocument();
+  });
+
+  it("does not show an in-app error when account switching fails", async () => {
+    mockApi.getAppState.mockResolvedValue(
+      state({
+        identities: state().identities.map((identity) =>
+          identity.name === "backup@example.com" ? { ...identity, loggedIn: true, loginExpired: false } : identity,
+        ),
+      }),
+    );
+    mockApi.switchIdentity.mockRejectedValue(new Error("Codex 未退出，账号切换已取消。"));
+
+    render(<App />);
+
+    const backupRow = await screen.findByRole("article", { name: /backup@example.com/ });
+    await userEvent.click(within(backupRow).getByRole("button", { name: /切换到 backup@example.com/ }));
+
+    await waitFor(() => expect(mockApi.switchIdentity).toHaveBeenCalledWith("backup@example.com"));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "处理中" })).not.toBeInTheDocument());
+    expect(screen.queryByText("Codex 未退出，账号切换已取消。")).not.toBeInTheDocument();
+    expect(screen.getByRole("article", { name: /team@example.com/ })).toHaveClass("current");
+    expect(screen.getByRole("article", { name: /backup@example.com/ })).not.toHaveClass("current");
+  });
+
   it("renders a newly added account and unlocks row actions while browser login is still pending", async () => {
     const pendingLogin = new Promise(() => undefined);
     const pendingIdentity = {
@@ -463,7 +510,7 @@ describe("App", () => {
 
       await waitFor(() => expect(mockApi.loginIdentity).toHaveBeenCalledWith("登录中"));
       await waitFor(() => expect(mockApi.refreshIdentity).toHaveBeenCalledWith("new@example.com"));
-      expect(await screen.findByRole("dialog", { name: "正在刷新账号信息" })).toBeInTheDocument();
+      expect(await screen.findByRole("dialog", { name: "处理中" })).toBeInTheDocument();
 
       finishRefresh(loggedInIdentity);
 
@@ -563,7 +610,7 @@ describe("App", () => {
     mockApi.getAppState.mockResolvedValue(state());
     mockApi.refreshAll.mockImplementation(
       () => {
-        dialogWasVisibleWhenRefreshStarted = Boolean(screen.queryByRole("dialog", { name: "正在刷新账号信息" }));
+        dialogWasVisibleWhenRefreshStarted = Boolean(screen.queryByRole("dialog", { name: "处理中" }));
         return new Promise((resolve) => {
           finishRefresh = resolve;
         });
@@ -582,7 +629,8 @@ describe("App", () => {
     expect(dialogWasVisibleWhenRefreshStarted).toBe(true);
     expect(refreshButton).toBeDisabled();
     expect(refreshButton).toHaveAttribute("aria-busy", "true");
-    expect(await screen.findByRole("dialog", { name: "正在刷新账号信息" })).toBeInTheDocument();
+    expect(await screen.findByRole("dialog", { name: "处理中" })).toBeInTheDocument();
+    expect(screen.queryByText("正在刷新账号信息")).not.toBeInTheDocument();
     expect(screen.queryByText("Modex 正在同步账号状态，主界面会保持可见。")).not.toBeInTheDocument();
     expect(screen.queryByText("正在刷新")).not.toBeInTheDocument();
 
@@ -602,12 +650,12 @@ describe("App", () => {
 
     eventMocks.listeners.get("modex://refresh-started")?.();
 
-    expect(await screen.findByRole("dialog", { name: "正在刷新账号信息" })).toBeInTheDocument();
+    expect(await screen.findByRole("dialog", { name: "处理中" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "刷新全部账号" })).not.toBeDisabled();
 
     eventMocks.listeners.get("modex://refresh-finished")?.();
 
-    await waitFor(() => expect(screen.queryByRole("dialog", { name: "正在刷新账号信息" })).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "处理中" })).not.toBeInTheDocument());
   });
 
   it("shows the refresh dialog during startup refresh before state loads", async () => {
@@ -618,7 +666,7 @@ describe("App", () => {
     await waitFor(() => expect(eventMocks.listen).toHaveBeenCalledWith("modex://refresh-started", expect.any(Function)));
     eventMocks.listeners.get("modex://refresh-started")?.();
 
-    expect(await screen.findByRole("dialog", { name: "正在刷新账号信息" })).toBeInTheDocument();
+    expect(await screen.findByRole("dialog", { name: "处理中" })).toBeInTheDocument();
     expect(screen.getByText("加载 Modex")).toBeInTheDocument();
   });
 
@@ -627,7 +675,7 @@ describe("App", () => {
 
     render(<App />);
 
-    expect(await screen.findByRole("dialog", { name: "正在刷新账号信息" })).toBeInTheDocument();
+    expect(await screen.findByRole("dialog", { name: "处理中" })).toBeInTheDocument();
   });
 
   it("reloads app state when the backend emits state-updated", async () => {

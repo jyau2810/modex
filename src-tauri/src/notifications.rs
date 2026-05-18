@@ -1,4 +1,8 @@
 use std::collections::HashMap;
+#[cfg(target_os = "macos")]
+use std::ffi::{c_char, c_int, CStr, CString};
+use std::fs::OpenOptions;
+use std::io::Write;
 
 use tauri::AppHandle;
 use tauri_plugin_notification::NotificationExt;
@@ -15,6 +19,13 @@ pub fn switch_success_notification(name: &str) -> NotificationSpec {
     NotificationSpec {
         title: "账号切换成功".to_string(),
         body: format!("已切换到账号：{name}"),
+    }
+}
+
+pub fn switch_failure_notification(name: &str, reason: &str) -> NotificationSpec {
+    NotificationSpec {
+        title: "账号切换失败".to_string(),
+        body: format!("{name} 切换失败：{reason}"),
     }
 }
 
@@ -58,15 +69,137 @@ pub fn refresh_notifications(
 }
 
 pub fn send_notification(app: &AppHandle, notification: &NotificationSpec) {
-    if let Err(error) = app
+    log_notification_attempt(notification, "attempt");
+    log_notification_permission(app, notification);
+
+    #[cfg(target_os = "macos")]
+    {
+        match send_macos_foreground_notification(notification) {
+            Ok(status) => log_notification_attempt(notification, status),
+            Err(error) => {
+                log_notification_attempt(notification, &format!("failed: {error}"));
+                eprintln!("modex notification failed: {error}");
+            }
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    send_tauri_notification(app, notification);
+}
+
+fn log_notification_permission(app: &AppHandle, notification: &NotificationSpec) {
+    match app.notification().permission_state() {
+        Ok(permission) => {
+            log_notification_attempt(notification, &format!("permission: {permission:?}"))
+        }
+        Err(error) => log_notification_attempt(notification, &format!("permission_error: {error}")),
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn send_tauri_notification(app: &AppHandle, notification: &NotificationSpec) {
+    match app
         .notification()
         .builder()
         .title(&notification.title)
         .body(&notification.body)
         .show()
     {
-        eprintln!("modex notification failed: {error}");
+        Ok(()) => log_notification_attempt(notification, "submitted"),
+        Err(error) => {
+            log_notification_attempt(notification, &format!("failed: {error}"));
+            eprintln!("modex notification failed: {error}");
+        }
     }
+}
+
+#[cfg(target_os = "macos")]
+fn send_macos_foreground_notification(
+    notification: &NotificationSpec,
+) -> Result<&'static str, String> {
+    let title = cstring_field(&notification.title)?;
+    let body = cstring_field(&notification.body)?;
+    let status = unsafe { modex_send_user_notification(title.as_ptr(), body.as_ptr()) };
+    match status {
+        1 => Ok("delivered: usernotifications"),
+        2 => Ok("delivered: nsusernotification"),
+        -1 => Err("macOS notification bridge rejected the title or body".to_string()),
+        -2 => Err(macos_notification_error(
+            "UserNotifications authorization denied",
+        )),
+        -3 => Err(macos_notification_error(
+            "UserNotifications authorization failed",
+        )),
+        -4 => Err(macos_notification_error(
+            "UserNotifications add request failed",
+        )),
+        -5 => Err(macos_notification_error(
+            "UserNotifications add request timed out",
+        )),
+        _ => Err(macos_notification_error(&format!(
+            "macOS notification bridge failed with status {status}"
+        ))),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn cstring_field(value: &str) -> Result<CString, String> {
+    CString::new(value).map_err(|_| "notification text contains a NUL byte".to_string())
+}
+
+#[cfg(target_os = "macos")]
+fn macos_notification_error(message: &str) -> String {
+    match macos_last_notification_error() {
+        Some(detail) => format!("{message}: {detail}"),
+        None => message.to_string(),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn macos_last_notification_error() -> Option<String> {
+    let ptr = unsafe { modex_last_notification_error() };
+    if ptr.is_null() {
+        return None;
+    }
+    let value = unsafe { CStr::from_ptr(ptr) }
+        .to_string_lossy()
+        .into_owned();
+    (!value.is_empty()).then_some(value)
+}
+
+#[cfg(target_os = "macos")]
+unsafe extern "C" {
+    fn modex_send_user_notification(title: *const c_char, body: *const c_char) -> c_int;
+    fn modex_last_notification_error() -> *const c_char;
+}
+
+fn log_notification_attempt(notification: &NotificationSpec, status: &str) {
+    let Some(mut path) = dirs::data_dir() else {
+        return;
+    };
+    path.push("Modex");
+    if std::fs::create_dir_all(&path).is_err() {
+        return;
+    }
+    path.push("notifications.log");
+    let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) else {
+        return;
+    };
+    let _ = writeln!(
+        file,
+        "{}\t{}\t{}\t{}",
+        timestamp_millis(),
+        status,
+        notification.title.replace('\t', " "),
+        notification.body.replace('\t', " ")
+    );
+}
+
+fn timestamp_millis() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or_default()
 }
 
 pub fn send_notifications(app: &AppHandle, notifications: &[NotificationSpec]) {
@@ -109,6 +242,17 @@ mod tests {
             NotificationSpec {
                 title: "账号切换成功".to_string(),
                 body: "已切换到账号：team@example.com".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn plans_switch_failure_notification() {
+        assert_eq!(
+            switch_failure_notification("team@example.com", "Codex 未退出，账号切换已取消。"),
+            NotificationSpec {
+                title: "账号切换失败".to_string(),
+                body: "team@example.com 切换失败：Codex 未退出，账号切换已取消。".to_string(),
             }
         );
     }

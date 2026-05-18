@@ -57,10 +57,28 @@ pub fn run() {
                 }
             }
             tray::setup(app.app_handle())?;
+            maybe_send_notification_probe(app.app_handle().clone());
             commands::start_startup_refresh(app.app_handle().clone());
             commands::start_background_monitor(app.app_handle().clone());
             Ok(())
         })
         .run(tauri::generate_context!())
         .expect("error while running Modex");
+}
+
+fn maybe_send_notification_probe(app: tauri::AppHandle) {
+    if std::env::var_os("MODEX_NOTIFICATION_PROBE").is_none() {
+        return;
+    }
+
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        notifications::send_notification(
+            &app,
+            &notifications::NotificationSpec {
+                title: "Modex".to_string(),
+                body: "通知链路自测".to_string(),
+            },
+        );
+    });
 }

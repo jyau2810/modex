@@ -43,15 +43,50 @@ pub fn run_login(settings: &AppSettings, identity: &AppIdentity) -> ModexResult<
 }
 
 pub fn open_codex_app(settings: &AppSettings, identity: &AppIdentity) -> ModexResult<()> {
-    sync_identity_auth(&settings.source_home, &identity.codex_home)?;
+    open_codex_app_with_operations(
+        settings,
+        identity,
+        quit_codex_app_if_running,
+        sync_identity_auth,
+        spawn_program,
+    )
+}
+
+fn open_codex_app_with_operations(
+    settings: &AppSettings,
+    identity: &AppIdentity,
+    quit: impl FnOnce(&AppSettings) -> ModexResult<()>,
+    sync: impl FnOnce(&Path, &Path) -> ModexResult<PathBuf>,
+    launch: impl FnOnce(ProgramInvocation) -> ModexResult<()>,
+) -> ModexResult<()> {
     #[cfg(target_os = "macos")]
-    {
-        let _ = Command::new("osascript")
-            .arg("-e")
-            .arg(macos_quit_codex_app_script(&settings.app_name))
-            .status();
+    quit(settings)?;
+    #[cfg(not(target_os = "macos"))]
+    let _ = quit;
+    sync(&settings.source_home, &identity.codex_home)?;
+    launch(open_codex_app_launch_command(settings))
+}
+
+#[cfg(target_os = "macos")]
+fn quit_codex_app_if_running(settings: &AppSettings) -> ModexResult<()> {
+    let output = Command::new("osascript")
+        .arg("-e")
+        .arg(macos_quit_codex_app_script(&settings.app_name))
+        .output()?;
+    if output.status.success() {
+        return Ok(());
     }
-    spawn_program(open_codex_app_launch_command(settings))?;
+    let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let mut message =
+        "Codex 未退出，账号切换已取消。请等当前任务结束，或在 Codex 中确认退出后再试。".to_string();
+    if !detail.is_empty() {
+        message.push_str(&format!(" ({detail})"));
+    }
+    Err(ModexError::from(message))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn quit_codex_app_if_running(_settings: &AppSettings) -> ModexResult<()> {
     Ok(())
 }
 
@@ -65,6 +100,9 @@ pub fn macos_quit_codex_app_script(app_name: &str) -> String {
 		if application "{app_name}" is not running then exit repeat
 		delay 0.1
 	end repeat
+	if application "{app_name}" is running then
+		error "{app_name} did not quit" number -128
+	end if
 end if"#
     )
 }
@@ -309,6 +347,79 @@ fn expand_home(value: &str) -> PathBuf {
 
 fn escape_config_value(value: &str) -> String {
     value.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use std::cell::RefCell;
+    use std::path::{Path, PathBuf};
+
+    use super::super::app_config::{AppIdentity, AppSettings};
+    use super::super::ModexError;
+    use super::*;
+
+    #[test]
+    fn macos_switch_does_not_sync_auth_or_launch_when_codex_refuses_to_quit() {
+        let events = RefCell::new(Vec::new());
+        let settings = AppSettings::default_for_home(PathBuf::from("/tmp/modex-test"));
+        let identity = identity_at("/tmp/modex-test/.modex/new");
+
+        let result = open_codex_app_with_operations(
+            &settings,
+            &identity,
+            |_| {
+                events.borrow_mut().push("quit");
+                Err(ModexError::from("quit canceled"))
+            },
+            |_source, _identity| {
+                events.borrow_mut().push("sync");
+                Ok(PathBuf::from("/tmp/modex-test/source/auth.json"))
+            },
+            |_invocation| {
+                events.borrow_mut().push("launch");
+                Ok(())
+            },
+        );
+
+        assert!(result.is_err());
+        assert_eq!(events.into_inner(), vec!["quit"]);
+    }
+
+    #[test]
+    fn macos_switch_syncs_auth_only_after_codex_has_quit() {
+        let events = RefCell::new(Vec::new());
+        let settings = AppSettings::default_for_home(PathBuf::from("/tmp/modex-test"));
+        let identity = identity_at("/tmp/modex-test/.modex/new");
+
+        open_codex_app_with_operations(
+            &settings,
+            &identity,
+            |_| {
+                events.borrow_mut().push("quit");
+                Ok(())
+            },
+            |_source, _identity| {
+                events.borrow_mut().push("sync");
+                Ok(PathBuf::from("/tmp/modex-test/source/auth.json"))
+            },
+            |_invocation| {
+                events.borrow_mut().push("launch");
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        assert_eq!(events.into_inner(), vec!["quit", "sync", "launch"]);
+    }
+
+    fn identity_at(path: &str) -> AppIdentity {
+        AppIdentity {
+            name: "New".to_string(),
+            codex_home: Path::new(path).to_path_buf(),
+            monitor: true,
+            workspace_id: None,
+        }
+    }
 }
 
 #[cfg(target_os = "macos")]

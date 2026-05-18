@@ -54,7 +54,7 @@ npm run build
 ./build.sh
 ```
 
-首个内部分发版本未签名。macOS 可能需要在系统设置中手动批准，Windows 可能会显示 SmartScreen 警告。
+macOS 构建产物会在 `build.sh` 末尾做本机 ad-hoc 签名，以保证系统通知等能力使用稳定的应用身份；这不是 Developer ID 签名或 notarization。Windows 可能会显示 SmartScreen 警告。
 
 ## 行为说明
 

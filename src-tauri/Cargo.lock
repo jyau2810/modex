@@ -2155,6 +2155,7 @@ version = "0.1.0"
 dependencies = [
  "assert_fs",
  "base64 0.22.1",
+ "cc",
  "dirs",
  "predicates",
  "rand",

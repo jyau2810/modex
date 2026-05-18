@@ -18,6 +18,7 @@ import type { AppSettings, Identity, SettingsPatch } from "./types";
 type View = "accounts" | "settings";
 type ActionOptions = {
   reload?: boolean;
+  showError?: boolean;
 };
 type QuotaLabel = {
   prefix: string;
@@ -81,7 +82,7 @@ function App() {
   }, [autoImportCurrentIdentity, loadState]);
 
   const runAction = useCallback(async (label: string, action: () => Promise<unknown>, options: ActionOptions = {}) => {
-    const { reload = true } = options;
+    const { reload = true, showError = true } = options;
     setBusy(label);
     setError(null);
     try {
@@ -91,7 +92,9 @@ function App() {
         await loadState();
       }
     } catch (reason) {
-      setError(String(reason));
+      if (showError) {
+        setError(String(reason));
+      }
     } finally {
       setBusy(null);
     }
@@ -129,6 +132,7 @@ function App() {
     setBusy("add");
     setError(null);
     try {
+      await waitForNextPaint();
       const identity = await modexApi.addIdentity();
       await loadState();
       void modexApi.loginIdentity(identity.name).catch((reason) => setError(String(reason)));
@@ -163,7 +167,7 @@ function App() {
             : current,
         );
       },
-      { reload: false },
+      { reload: false, showError: false },
     );
 
   const requestDeleteIdentity = (name: string) => {
@@ -210,6 +214,7 @@ function App() {
     );
   }
 
+  const isSwitching = busy === "switch";
   const isRefreshing = busy === "refresh" || busy === "login-refresh" || refreshEventActive;
   const isSettingsView = view === "settings";
 
@@ -280,7 +285,7 @@ function App() {
           )}
         </div>
       </section>
-      <RefreshDialog open={isRefreshing} />
+      <RefreshDialog open={isRefreshing || isSwitching} />
       <DeleteConfirmDialog
         accountName={deleteTarget}
         onCancel={() => setDeleteTarget(null)}
@@ -326,7 +331,7 @@ function RefreshDialog({ open }: { open: boolean }) {
         <Dialog.Overlay className="refresh-overlay" />
         <Dialog.Content className="refresh-dialog" aria-describedby={undefined}>
           <Loader2 className="spin" size={24} />
-          <Dialog.Title>正在刷新账号信息</Dialog.Title>
+          <Dialog.Title className="sr-only">处理中</Dialog.Title>
         </Dialog.Content>
       </Dialog.Portal>
     </Dialog.Root>
