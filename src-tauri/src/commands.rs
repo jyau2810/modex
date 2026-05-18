@@ -1,3 +1,4 @@
+use std::process::Command;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, Mutex,
@@ -6,12 +7,18 @@ use std::time::Duration;
 
 use tauri::{AppHandle, Emitter, Manager, State};
 
-use crate::core::app_config::{AppIdentity, AppSettings};
+use crate::core::app_config::{AppIdentity, AppSettings, DailyWakeSettings};
+use crate::core::auth::{auth_plan_type, plan_label};
 use crate::core::codex::read_quota_snapshot;
 use crate::core::engine::{
     ActionResult, AppEngine, AppViewState, IdentityView, ImportIdentityResult, SettingsPatch,
 };
 use crate::core::quota::QuotaSnapshot;
+use crate::core::wake::{
+    append_wake_log_entry, default_wake_log_path, primary_delta_exceeds_limit,
+    read_recent_wake_log_entries, run_wake_prompt, should_wake_identity, timestamp_millis,
+    weekly_remaining_percent, WakeAuditEntry, WakeDecision, WakeSkipReason, WakeThresholds,
+};
 use crate::notifications::{
     refresh_notifications, send_notification, send_notifications, switch_failure_notification,
     switch_success_notification,
@@ -20,7 +27,27 @@ use crate::notifications::{
 pub const STATE_UPDATED_EVENT: &str = "modex://state-updated";
 pub const REFRESH_STARTED_EVENT: &str = "modex://refresh-started";
 pub const REFRESH_FINISHED_EVENT: &str = "modex://refresh-finished";
+pub const LOG_ENTRY_EVENT: &str = "modex://log-entry";
 const MIN_POLL_SECONDS: u64 = 10;
+const WAKE_CHECK_SECONDS: u64 = 30;
+const WAKE_WINDOW_MINUTES: u16 = 5;
+const WAKE_TIMEOUT_SECONDS: u64 = 60;
+const RECENT_LOG_LIMIT: usize = 200;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WakeRunMode {
+    Scheduled,
+    Manual,
+}
+
+impl WakeRunMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Scheduled => "scheduled",
+            Self::Manual => "manual",
+        }
+    }
+}
 
 pub struct ModexState {
     pub engine: Mutex<AppEngine>,
@@ -181,6 +208,39 @@ pub fn update_settings(
     let view = with_engine(&state, |engine| engine.update_settings(settings_patch))?;
     refresh_tray(&app);
     Ok(view)
+}
+
+#[tauri::command]
+pub fn update_daily_wake_settings(
+    app: AppHandle,
+    state: State<'_, ModexState>,
+    daily_wake: DailyWakeSettings,
+) -> Result<AppViewState, String> {
+    let view = with_engine(&state, |engine| engine.update_daily_wake(daily_wake))?;
+    refresh_tray(&app);
+    emit_state_updated(&app);
+    Ok(view)
+}
+
+#[tauri::command]
+pub fn get_recent_log_entries() -> Result<Vec<WakeAuditEntry>, String> {
+    read_recent_wake_log_entries(&default_wake_log_path(), RECENT_LOG_LIMIT)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn run_daily_wake_now(app: AppHandle) -> Result<ActionResult, String> {
+    run_blocking(move || {
+        let today = local_date_and_time()
+            .map(|(today, _)| today)
+            .ok_or_else(|| "无法读取本地日期，测试唤醒未启动。".to_string())?;
+        run_daily_wake_job(&app, &today, WakeRunMode::Manual)?;
+        Ok(ActionResult {
+            ok: true,
+            message: "已完成一次测试唤醒，详情见日志。".to_string(),
+        })
+    })
+    .await
 }
 
 #[tauri::command]
@@ -425,6 +485,322 @@ pub fn start_background_monitor(app: AppHandle) {
     });
 }
 
+pub fn start_daily_wake_scheduler(app: AppHandle) {
+    std::thread::spawn(move || loop {
+        std::thread::sleep(Duration::from_secs(WAKE_CHECK_SECONDS));
+        let Some((today, current_time)) = local_date_and_time() else {
+            continue;
+        };
+        let settings = {
+            let state = app.state::<ModexState>();
+            state
+                .engine
+                .lock()
+                .map(|engine| engine.settings().daily_wake.clone())
+                .unwrap_or_default()
+        };
+        if !should_start_daily_wake(&settings, &today, &current_time) {
+            continue;
+        }
+        if let Err(error) = run_daily_wake_job(&app, &today, WakeRunMode::Scheduled) {
+            eprintln!("modex daily wake failed: {error}");
+        }
+    });
+}
+
+pub fn should_start_daily_wake(
+    settings: &DailyWakeSettings,
+    today: &str,
+    current_time: &str,
+) -> bool {
+    if !settings.enabled || settings.last_run_date.as_deref() == Some(today) {
+        return false;
+    }
+    let Some(scheduled) = minutes_since_midnight(&settings.time) else {
+        return false;
+    };
+    let Some(current) = minutes_since_midnight(current_time) else {
+        return false;
+    };
+    current >= scheduled && current.saturating_sub(scheduled) <= WAKE_WINDOW_MINUTES
+}
+
+fn run_daily_wake_job(app: &AppHandle, today: &str, mode: WakeRunMode) -> Result<(), String> {
+    let state = app.state::<ModexState>();
+    let Some(guard) = state.try_begin_refresh() else {
+        if mode == WakeRunMode::Manual {
+            return Err("当前正在刷新或唤醒，请稍后再试。".to_string());
+        }
+        return Ok(());
+    };
+    let (settings, identities, mut wake_settings) = {
+        let mut engine = state
+            .engine
+            .lock()
+            .map_err(|_| "Modex state lock poisoned".to_string())?;
+        let settings = engine.settings().clone();
+        if mode == WakeRunMode::Scheduled
+            && (!settings.daily_wake.enabled
+                || settings.daily_wake.last_run_date.as_deref() == Some(today))
+        {
+            return Ok(());
+        }
+        if mode == WakeRunMode::Scheduled {
+            engine
+                .set_daily_wake_last_run_date(today.to_string())
+                .map_err(|error| error.to_string())?;
+        }
+        (
+            settings.clone(),
+            settings.identities.clone(),
+            settings.daily_wake.clone(),
+        )
+    };
+    wake_settings.last_run_date = None;
+
+    emit_refresh_started(app);
+    let run_id = format!("wake-{}-{today}-{}", mode.as_str(), timestamp_millis());
+    let mut circuit_breaker = false;
+    for identity in identities {
+        if circuit_breaker {
+            break;
+        }
+        if is_known_non_team_identity(&identity) {
+            continue;
+        }
+        let before_refresh = read_quota_snapshot(&settings, &identity);
+        let identity_view = {
+            let mut engine = state
+                .engine
+                .lock()
+                .map_err(|_| "Modex state lock poisoned".to_string())?;
+            match before_refresh {
+                Ok(snapshot) => engine.set_snapshot(&identity.name, snapshot),
+                Err(error) => engine.set_error(&identity.name, error.to_string()),
+            }
+            identity_view_from_engine(&engine, &identity.name)?
+        };
+
+        match should_wake_identity(&identity_view, &wake_settings, today) {
+            WakeDecision::Skip(reason) => {
+                if !should_log_wake_skip(&reason) {
+                    continue;
+                }
+                emit_and_append_log(
+                    app,
+                    wake_audit_entry(
+                        &run_id,
+                        &identity_view,
+                        "info",
+                        "skipped",
+                        Some(reason),
+                        "账号未唤醒",
+                        serde_json::json!({ "trigger": mode.as_str() }),
+                        &wake_settings,
+                    ),
+                );
+                continue;
+            }
+            WakeDecision::Wake => {}
+        }
+
+        let before_primary = identity_view.quota.primary_percent;
+        let result = run_wake_prompt(
+            &settings.codex_binary,
+            &identity,
+            &wake_settings.message,
+            Duration::from_secs(WAKE_TIMEOUT_SECONDS),
+        );
+        let after_refresh = read_quota_snapshot(&settings, &identity);
+        let after_view = {
+            let mut engine = state
+                .engine
+                .lock()
+                .map_err(|_| "Modex state lock poisoned".to_string())?;
+            match after_refresh {
+                Ok(snapshot) => engine.set_snapshot(&identity.name, snapshot),
+                Err(error) => engine.set_error(&identity.name, error.to_string()),
+            }
+            identity_view_from_engine(&engine, &identity.name)?
+        };
+        let after_primary = after_view.quota.primary_percent;
+        let mut detail = serde_json::json!({
+            "trigger": mode.as_str(),
+            "beforePrimaryPercent": before_primary,
+            "afterPrimaryPercent": after_primary
+        });
+        let (level, decision, title, reason) = match result {
+            Ok(result) => {
+                detail["wakeResult"] =
+                    serde_json::to_value(&result).unwrap_or_else(|_| serde_json::Value::Null);
+                if result.timed_out {
+                    circuit_breaker = true;
+                    (
+                        "error",
+                        "circuitBreaker",
+                        "每日唤醒熔断",
+                        Some("timedOut".to_string()),
+                    )
+                } else if result.exit_code != Some(0) {
+                    circuit_breaker = true;
+                    (
+                        "error",
+                        "circuitBreaker",
+                        "每日唤醒熔断",
+                        Some("nonZeroExit".to_string()),
+                    )
+                } else if result.last_message.trim() != "OK" || result.last_message.len() > 16 {
+                    circuit_breaker = true;
+                    (
+                        "error",
+                        "circuitBreaker",
+                        "每日唤醒熔断",
+                        Some("unexpectedReply".to_string()),
+                    )
+                } else if primary_delta_exceeds_limit(
+                    before_primary,
+                    after_primary,
+                    wake_settings.max_primary_delta_percent,
+                ) {
+                    circuit_breaker = true;
+                    (
+                        "error",
+                        "circuitBreaker",
+                        "每日唤醒熔断",
+                        Some("primaryDeltaExceeded".to_string()),
+                    )
+                } else {
+                    ("info", "woke", "每日唤醒完成", None)
+                }
+            }
+            Err(error) => {
+                circuit_breaker = true;
+                detail["error"] = serde_json::json!(error.to_string());
+                (
+                    "error",
+                    "circuitBreaker",
+                    "每日唤醒熔断",
+                    Some("executionError".to_string()),
+                )
+            }
+        };
+        let mut entry = wake_audit_entry(
+            &run_id,
+            &after_view,
+            level,
+            decision,
+            None,
+            title,
+            detail,
+            &wake_settings,
+        );
+        entry.reason = reason;
+        emit_and_append_log(app, entry);
+    }
+    drop(guard);
+    refresh_tray(app);
+    emit_refresh_finished(app);
+    emit_state_updated(app);
+    Ok(())
+}
+
+fn wake_audit_entry(
+    run_id: &str,
+    identity: &IdentityView,
+    level: &str,
+    decision: &str,
+    reason: Option<WakeSkipReason>,
+    title: &str,
+    detail: serde_json::Value,
+    settings: &DailyWakeSettings,
+) -> WakeAuditEntry {
+    let reason = reason.map(|reason| format!("{reason:?}"));
+    WakeAuditEntry {
+        id: format!("{run_id}:{}:{}", identity.name, timestamp_millis()),
+        run_id: run_id.to_string(),
+        timestamp_millis: timestamp_millis(),
+        level: level.to_string(),
+        source: "dailyWake".to_string(),
+        identity_name: Some(identity.name.clone()),
+        title: title.to_string(),
+        message: match decision {
+            "skipped" => format!(
+                "{} 未唤醒：{}",
+                identity.name,
+                reason.as_deref().unwrap_or("unknown")
+            ),
+            "woke" => format!("{} 已完成每日唤醒", identity.name),
+            _ => format!("{} 每日唤醒已停止", identity.name),
+        },
+        decision: decision.to_string(),
+        reason,
+        primary_used_percent: Some(identity.quota.primary_percent),
+        weekly_remaining_percent: Some(weekly_remaining_percent(identity)),
+        thresholds: WakeThresholds::from(settings),
+        detail,
+    }
+}
+
+fn emit_and_append_log(app: &AppHandle, entry: WakeAuditEntry) {
+    if let Err(error) = append_wake_log_entry(&default_wake_log_path(), &entry) {
+        eprintln!("modex wake audit log failed: {error}");
+    }
+    let _ = app.emit(LOG_ENTRY_EVENT, entry);
+}
+
+fn local_date_and_time() -> Option<(String, String)> {
+    #[cfg(target_os = "windows")]
+    let output = Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-Command",
+            "Get-Date -Format 'yyyy-MM-dd:HH:mm'",
+        ])
+        .output()
+        .ok()?;
+
+    #[cfg(not(target_os = "windows"))]
+    let output = Command::new("date").arg("+%Y-%m-%d:%H:%M").output().ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+    let raw = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let (date, time) = raw.rsplit_once(':')?;
+    let (date, hour) = date.rsplit_once(':')?;
+    Some((date.to_string(), format!("{hour}:{time}")))
+}
+
+fn minutes_since_midnight(value: &str) -> Option<u16> {
+    let (hour, minute) = value.split_once(':')?;
+    let hour = hour.parse::<u16>().ok()?;
+    let minute = minute.parse::<u16>().ok()?;
+    if hour > 23 || minute > 59 {
+        return None;
+    }
+    Some(hour * 60 + minute)
+}
+
+fn is_known_non_team_identity(identity: &AppIdentity) -> bool {
+    matches!(
+        known_identity_plan_label(identity).as_deref(),
+        Some(plan) if plan != "团队版"
+    )
+}
+
+fn known_identity_plan_label(identity: &AppIdentity) -> Option<String> {
+    let auth_label = plan_label(auth_plan_type(&identity.codex_home).as_deref());
+    if auth_label != "计划未知" {
+        return Some(auth_label);
+    }
+    let (_, suffix) = identity.name.rsplit_once(" · ")?;
+    matches!(suffix, "团队版" | "企业版" | "个人版" | "免费版").then(|| suffix.to_string())
+}
+
+fn should_log_wake_skip(reason: &WakeSkipReason) -> bool {
+    !matches!(reason, WakeSkipReason::NotTeamPlan)
+}
+
 fn refresh_tray(app: &AppHandle) {
     let _ = crate::tray::refresh_menu(app);
 }
@@ -504,7 +880,7 @@ mod tests {
     use std::sync::mpsc;
     use std::time::Duration;
 
-    use crate::core::app_config::{AppIdentity, AppSettings};
+    use crate::core::app_config::{AppIdentity, AppSettings, DailyWakeSettings};
     use crate::core::quota::QuotaSnapshot;
     use crate::core::ModexError;
 
@@ -759,5 +1135,82 @@ mod tests {
         .unwrap();
 
         assert!(refreshed.is_none());
+    }
+
+    #[test]
+    fn daily_wake_starts_only_inside_the_scheduled_window_once_per_day() {
+        let mut settings = DailyWakeSettings {
+            enabled: true,
+            time: "08:30".to_string(),
+            ..DailyWakeSettings::default()
+        };
+
+        assert!(!should_start_daily_wake(&settings, "2026-05-18", "08:29"));
+        assert!(should_start_daily_wake(&settings, "2026-05-18", "08:30"));
+        assert!(should_start_daily_wake(&settings, "2026-05-18", "08:35"));
+        assert!(!should_start_daily_wake(&settings, "2026-05-18", "08:36"));
+
+        settings.last_run_date = Some("2026-05-18".to_string());
+        assert!(!should_start_daily_wake(&settings, "2026-05-18", "08:30"));
+        assert!(should_start_daily_wake(&settings, "2026-05-19", "08:30"));
+    }
+
+    #[test]
+    fn daily_wake_does_not_start_when_disabled_or_time_is_invalid() {
+        let disabled = DailyWakeSettings {
+            enabled: false,
+            time: "08:30".to_string(),
+            ..DailyWakeSettings::default()
+        };
+        let invalid = DailyWakeSettings {
+            enabled: true,
+            time: "25:00".to_string(),
+            ..DailyWakeSettings::default()
+        };
+
+        assert!(!should_start_daily_wake(&disabled, "2026-05-18", "08:30"));
+        assert!(!should_start_daily_wake(&invalid, "2026-05-18", "08:30"));
+    }
+
+    #[test]
+    fn wake_logs_skip_reasons_only_for_team_candidates() {
+        assert!(!should_log_wake_skip(&WakeSkipReason::NotTeamPlan));
+        assert!(should_log_wake_skip(
+            &WakeSkipReason::PrimaryUsageAboveThreshold
+        ));
+        assert!(should_log_wake_skip(&WakeSkipReason::QuotaUnavailable));
+    }
+
+    #[test]
+    fn wake_excludes_known_non_team_identities_before_quota_check() {
+        let free = AppIdentity {
+            name: "free@example.com · 免费版".to_string(),
+            codex_home: PathBuf::from("/tmp/free"),
+            monitor: false,
+            workspace_id: None,
+        };
+        let enterprise = AppIdentity {
+            name: "enterprise@example.com · 企业版".to_string(),
+            codex_home: PathBuf::from("/tmp/enterprise"),
+            monitor: false,
+            workspace_id: None,
+        };
+        let team = AppIdentity {
+            name: "team@example.com · 团队版".to_string(),
+            codex_home: PathBuf::from("/tmp/team"),
+            monitor: false,
+            workspace_id: None,
+        };
+        let unknown = AppIdentity {
+            name: "unknown@example.com".to_string(),
+            codex_home: PathBuf::from("/tmp/unknown"),
+            monitor: false,
+            workspace_id: None,
+        };
+
+        assert!(is_known_non_team_identity(&free));
+        assert!(is_known_non_team_identity(&enterprise));
+        assert!(!is_known_non_team_identity(&team));
+        assert!(!is_known_non_team_identity(&unknown));
     }
 }

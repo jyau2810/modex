@@ -19,6 +19,9 @@ pub fn run() {
             commands::refresh_identity,
             commands::refresh_all,
             commands::update_settings,
+            commands::update_daily_wake_settings,
+            commands::run_daily_wake_now,
+            commands::get_recent_log_entries,
             commands::open_identity_directory,
             commands::open_main_window,
         ])
@@ -60,6 +63,7 @@ pub fn run() {
             maybe_send_notification_probe(app.app_handle().clone());
             commands::start_startup_refresh(app.app_handle().clone());
             commands::start_background_monitor(app.app_handle().clone());
+            commands::start_daily_wake_scheduler(app.app_handle().clone());
             Ok(())
         })
         .run(tauri::generate_context!())

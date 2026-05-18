@@ -5,6 +5,7 @@ pub mod engine;
 pub mod identity_home;
 pub mod quota;
 pub mod sync;
+pub mod wake;
 
 use thiserror::Error;
 

@@ -1,8 +1,9 @@
 import { listen } from "@tauri-apps/api/event";
 import * as Dialog from "@radix-ui/react-dialog";
 import {
-  AlertCircle,
   ArrowLeft,
+  CircleHelp,
+  FileText,
   FolderOpen,
   Loader2,
   Plus,
@@ -10,20 +11,39 @@ import {
   RefreshCw,
   Settings,
   Trash2,
+  X,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { modexApi } from "./lib/api";
-import type { AppSettings, Identity, SettingsPatch } from "./types";
+import type { AppLogEntry, AppSettings, DailyWakeSettings, Identity, SettingsPatch } from "./types";
 
 type View = "accounts" | "settings";
 type ActionOptions = {
+  applyResult?: (result: unknown) => void;
   reload?: boolean;
-  showError?: boolean;
+  showBusy?: boolean;
+  failureNoticeTitle?: string;
+  successNotice?: {
+    title: string;
+    message: string;
+  };
 };
 type QuotaLabel = {
   prefix: string;
   percent?: string;
   suffix?: string;
+};
+type ToastNoticeState = {
+  id: string;
+  level: AppLogEntry["level"];
+  title: string;
+  message: string;
+};
+
+const WAKE_THRESHOLD_HELP = {
+  primary: "当前5小时用量高于该百分比时跳过唤醒，避免在已经消耗过额度的窗口继续触发。",
+  weekly: "周额度剩余低于该百分比时跳过唤醒，优先保护团队账号的长期额度。",
+  delta: "唤醒后5小时用量增长超过该百分比会记为异常，方便追溯是否触发了超预期消耗。",
 };
 
 function App() {
@@ -31,9 +51,49 @@ function App() {
   const [view, setView] = useState<View>("accounts");
   const [busy, setBusy] = useState<string | null>(null);
   const [refreshEventActive, setRefreshEventActive] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [logEntries, setLogEntries] = useState<AppLogEntry[]>([]);
+  const [logOpen, setLogOpen] = useState(false);
+  const [unreadLogs, setUnreadLogs] = useState(0);
+  const [toast, setToast] = useState<ToastNoticeState | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
   const autoImportAttempted = useRef(false);
+  const inFlightActions = useRef(new Set<string>());
+  const toastTimer = useRef<number | null>(null);
+
+  const appendLog = useCallback(
+    (entry: AppLogEntry, unread = true) => {
+      setLogEntries((current) => [entry, ...current.filter((item) => item.id !== entry.id)].slice(0, 200));
+      if (unread && !logOpen) {
+        setUnreadLogs((current) => current + 1);
+      }
+    },
+    [logOpen],
+  );
+
+  const appendClientLog = useCallback(
+    (title: string, reason: unknown, level: AppLogEntry["level"] = "error") => {
+      appendLog(clientLogEntry(title, reason, level));
+    },
+    [appendLog],
+  );
+
+  const showNotice = useCallback(
+    (title: string, reason: unknown, level: AppLogEntry["level"]) => {
+      const entry = clientLogEntry(title, reason, level);
+      appendLog(entry);
+      setToast({
+        id: entry.id,
+        level,
+        title,
+        message: entry.message,
+      });
+      if (toastTimer.current) {
+        window.clearTimeout(toastTimer.current);
+      }
+      toastTimer.current = window.setTimeout(() => setToast(null), 3000);
+    },
+    [appendLog],
+  );
 
   const loadState = useCallback(async () => {
     const next = await modexApi.getAppState();
@@ -56,20 +116,33 @@ function App() {
     let cancelled = false;
     const bootstrap = async () => {
       await loadState();
+      const recentLogs = await modexApi.getRecentLogEntries();
+      if (!cancelled) {
+        setLogEntries((current) => [
+          ...current,
+          ...recentLogs.filter((entry) => !current.some((item) => item.id === entry.id)),
+        ].slice(0, 200));
+      }
       if (!cancelled) {
         await autoImportCurrentIdentity();
       }
     };
-    bootstrap().catch((reason) => setError(String(reason)));
+    bootstrap().catch((reason) => appendClientLog("启动失败", reason));
 
     const openSettings = listen("modex://open-settings", () => setView("settings"));
     const stateUpdated = listen("modex://state-updated", () => {
-      loadState().catch((reason) => setError(String(reason)));
+      loadState().catch((reason) => appendClientLog("状态刷新失败", reason));
     });
     const refreshStarted = listen("modex://refresh-started", () => setRefreshEventActive(true));
     const refreshFinished = listen("modex://refresh-finished", () => {
       setRefreshEventActive(false);
-      loadState().catch((reason) => setError(String(reason)));
+      loadState().catch((reason) => appendClientLog("状态刷新失败", reason));
+    });
+    const logEntry = listen("modex://log-entry", (event) => {
+      const payload = (event as { payload?: AppLogEntry }).payload;
+      if (payload) {
+        appendLog(payload);
+      }
     });
 
     return () => {
@@ -78,27 +151,49 @@ function App() {
       stateUpdated.then((cleanup) => cleanup()).catch(() => undefined);
       refreshStarted.then((cleanup) => cleanup()).catch(() => undefined);
       refreshFinished.then((cleanup) => cleanup()).catch(() => undefined);
+      logEntry.then((cleanup) => cleanup()).catch(() => undefined);
     };
-  }, [autoImportCurrentIdentity, loadState]);
+  }, [appendClientLog, appendLog, autoImportCurrentIdentity, loadState]);
+
+  useEffect(
+    () => () => {
+      if (toastTimer.current) {
+        window.clearTimeout(toastTimer.current);
+      }
+    },
+    [],
+  );
 
   const runAction = useCallback(async (label: string, action: () => Promise<unknown>, options: ActionOptions = {}) => {
-    const { reload = true, showError = true } = options;
-    setBusy(label);
-    setError(null);
+    if (inFlightActions.current.has(label)) return;
+    const { applyResult, failureNoticeTitle, reload = true, showBusy = true, successNotice } = options;
+    inFlightActions.current.add(label);
+    if (showBusy) {
+      setBusy(label);
+    }
     try {
       await waitForNextPaint();
-      await action();
+      const result = await action();
+      applyResult?.(result);
       if (reload) {
         await loadState();
       }
+      if (successNotice) {
+        showNotice(successNotice.title, successNotice.message, "info");
+      }
     } catch (reason) {
-      if (showError) {
-        setError(String(reason));
+      if (failureNoticeTitle) {
+        showNotice(failureNoticeTitle, reason, "error");
+      } else {
+        appendClientLog("操作失败", reason);
       }
     } finally {
-      setBusy(null);
+      inFlightActions.current.delete(label);
+      if (showBusy) {
+        setBusy(null);
+      }
     }
-  }, [loadState]);
+  }, [appendClientLog, loadState, showNotice]);
 
   const pollLoginState = useCallback(
     (pendingIdentity: Identity) => {
@@ -120,25 +215,24 @@ function App() {
             void runAction("login-refresh", () => modexApi.refreshIdentity(matchedIdentity.name));
           }
         } catch (reason) {
-          setError(String(reason));
+          appendClientLog("登录状态检查失败", reason);
         }
       };
       window.setTimeout(tick, 2000);
     },
-    [runAction],
+    [appendClientLog, runAction],
   );
 
   const addIdentity = async () => {
     setBusy("add");
-    setError(null);
     try {
       await waitForNextPaint();
       const identity = await modexApi.addIdentity();
       await loadState();
-      void modexApi.loginIdentity(identity.name).catch((reason) => setError(String(reason)));
+      void modexApi.loginIdentity(identity.name).catch((reason) => appendClientLog("登录失败", reason));
       pollLoginState(identity);
     } catch (reason) {
-      setError(String(reason));
+      appendClientLog("新增账号失败", reason);
     } finally {
       setBusy(null);
     }
@@ -167,12 +261,18 @@ function App() {
             : current,
         );
       },
-      { reload: false, showError: false },
+      { reload: false },
     );
 
   const requestDeleteIdentity = (name: string) => {
-    setError(null);
     setDeleteTarget(name);
+  };
+
+  const toggleLog = () => {
+    if (!logOpen) {
+      setUnreadLogs(0);
+    }
+    setLogOpen((current) => !current);
   };
 
   const removeIdentityLocally = useCallback((name: string) => {
@@ -246,6 +346,7 @@ function App() {
                 <Plus size={17} />
                 新增账号
               </button>
+              <LogButton open={logOpen} unread={unreadLogs > 0} onClick={toggleLog} />
               <button
                 className="icon-button settings-toggle"
                 onClick={() => setView("settings")}
@@ -258,19 +359,53 @@ function App() {
           ) : null}
         </header>
 
-        {error ? (
-          <div className="banner error">
-            <AlertCircle size={17} />
-            {error}
-          </div>
-        ) : null}
-
         <div className={`content-pane ${isSettingsView ? "settings-content" : "accounts-content"}`}>
           {isSettingsView ? (
             <SettingsView
               appState={appState}
               busy={busy !== null}
-              onSave={(patch) => runAction("settings", () => modexApi.updateSettings(patch))}
+              onSave={(patch) =>
+                runAction("settings", () => modexApi.updateSettings(patch), {
+                  applyResult: (next) => setAppState(next as AppSettings),
+                  failureNoticeTitle: "全局设置保存失败",
+                  reload: false,
+                  showBusy: false,
+                  successNotice: {
+                    title: "全局设置已保存",
+                    message: "配置已写入。",
+                  },
+                })
+              }
+              onSaveWake={(dailyWake) =>
+                runAction("wake-settings", () => modexApi.updateDailyWakeSettings(dailyWake), {
+                  applyResult: (next) => setAppState(next as AppSettings),
+                  failureNoticeTitle: "唤醒设置保存失败",
+                  reload: false,
+                  showBusy: false,
+                  successNotice: {
+                    title: "唤醒设置已保存",
+                    message: "每日后台唤醒配置已写入。",
+                  },
+                })
+              }
+              onRunWakeNow={(dailyWake) =>
+                runAction(
+                  "wake-now",
+                  async () => {
+                    const next = await modexApi.updateDailyWakeSettings(dailyWake);
+                    setAppState(next);
+                    return modexApi.runDailyWakeNow();
+                  },
+                  {
+                    failureNoticeTitle: "测试唤醒失败",
+                    reload: false,
+                    successNotice: {
+                      title: "测试唤醒已完成",
+                      message: "详情已写入日志面板。",
+                    },
+                  },
+                )
+              }
             />
           ) : appState.identities.length > 0 ? (
             <AccountWorkbench
@@ -284,6 +419,7 @@ function App() {
             <EmptyAccounts onAdd={addIdentity} busy={busy !== null} />
           )}
         </div>
+        {!isSettingsView && logOpen ? <LogPanel entries={logEntries} onClose={() => setLogOpen(false)} /> : null}
       </section>
       <RefreshDialog open={isRefreshing || isSwitching} />
       <DeleteConfirmDialog
@@ -291,7 +427,58 @@ function App() {
         onCancel={() => setDeleteTarget(null)}
         onConfirm={confirmDeleteIdentity}
       />
+      {toast ? <ToastNotice notice={toast} /> : null}
     </main>
+  );
+}
+
+function ToastNotice({ notice }: { notice: ToastNoticeState }) {
+  return (
+    <div className={`toast-notice ${notice.level}`} role={notice.level === "error" ? "alert" : "status"}>
+      <strong>{notice.title}</strong>
+      <span>{notice.message}</span>
+    </div>
+  );
+}
+
+function LogButton({ open, unread, onClick }: { open: boolean; unread: boolean; onClick: () => void }) {
+  return (
+    <button className="icon-button log-toggle" onClick={onClick} aria-label={open ? "关闭日志" : "打开日志"} aria-pressed={open}>
+      <FileText size={18} />
+      {unread ? <span className="unread-dot" aria-hidden="true" /> : null}
+    </button>
+  );
+}
+
+function LogPanel({ entries, onClose }: { entries: AppLogEntry[]; onClose: () => void }) {
+  return (
+    <aside className="log-panel" role="region" aria-label="日志">
+      <div className="log-panel-header">
+        <div>
+          <h2>运行日志</h2>
+          <span>{entries.length} 条</span>
+        </div>
+        <button className="icon-button log-close" aria-label="关闭日志面板" onClick={onClose}>
+          <X size={16} />
+        </button>
+      </div>
+      <div className="log-list">
+        {entries.length > 0 ? (
+          entries.map((entry) => (
+            <article className={`log-entry ${entry.level}`} key={entry.id}>
+              <div className="log-entry-main">
+                <strong>{entry.title}</strong>
+                <span>{formatLogTime(entry.timestampMillis)}</span>
+              </div>
+              <p>{entry.message}</p>
+              {entry.identityName ? <small>{entry.identityName}</small> : null}
+            </article>
+          ))
+        ) : (
+          <p className="log-empty">暂无日志</p>
+        )}
+      </div>
+    </aside>
   );
 }
 
@@ -451,16 +638,28 @@ function SettingsView({
   appState,
   busy,
   onSave,
+  onSaveWake,
+  onRunWakeNow,
 }: {
   appState: AppSettings;
   busy: boolean;
   onSave: (patch: SettingsPatch) => void;
+  onSaveWake: (dailyWake: DailyWakeSettings) => void;
+  onRunWakeNow: (dailyWake: DailyWakeSettings) => void;
 }) {
   const [form, setForm] = useState({
     codexBinary: appState.codexBinary,
     appName: appState.appName,
     sourceHome: appState.sourceHome,
     pollSeconds: String(appState.pollSeconds),
+  });
+  const [wakeForm, setWakeForm] = useState({
+    enabled: appState.dailyWake.enabled,
+    time: appState.dailyWake.time,
+    message: appState.dailyWake.message,
+    skipIfPrimaryUsedAbovePercent: String(appState.dailyWake.skipIfPrimaryUsedAbovePercent),
+    skipIfWeeklyRemainingBelowPercent: String(appState.dailyWake.skipIfWeeklyRemainingBelowPercent),
+    maxPrimaryDeltaPercent: String(appState.dailyWake.maxPrimaryDeltaPercent),
   });
 
   useEffect(() => {
@@ -470,7 +669,25 @@ function SettingsView({
       sourceHome: appState.sourceHome,
       pollSeconds: String(appState.pollSeconds),
     });
-  }, [appState.codexBinary, appState.appName, appState.sourceHome, appState.pollSeconds]);
+    setWakeForm({
+      enabled: appState.dailyWake.enabled,
+      time: appState.dailyWake.time,
+      message: appState.dailyWake.message,
+      skipIfPrimaryUsedAbovePercent: String(appState.dailyWake.skipIfPrimaryUsedAbovePercent),
+      skipIfWeeklyRemainingBelowPercent: String(appState.dailyWake.skipIfWeeklyRemainingBelowPercent),
+      maxPrimaryDeltaPercent: String(appState.dailyWake.maxPrimaryDeltaPercent),
+    });
+  }, [appState.codexBinary, appState.appName, appState.sourceHome, appState.pollSeconds, appState.dailyWake]);
+
+  const currentWakeSettings = (): DailyWakeSettings => ({
+    enabled: wakeForm.enabled,
+    time: wakeForm.time,
+    message: wakeForm.message,
+    skipIfPrimaryUsedAbovePercent: Number(wakeForm.skipIfPrimaryUsedAbovePercent),
+    skipIfWeeklyRemainingBelowPercent: Number(wakeForm.skipIfWeeklyRemainingBelowPercent),
+    maxPrimaryDeltaPercent: Number(wakeForm.maxPrimaryDeltaPercent),
+    lastRunDate: appState.dailyWake.lastRunDate ?? null,
+  });
 
   return (
     <section className="settings-panel">
@@ -509,7 +726,92 @@ function SettingsView({
       >
         保存全局设置
       </button>
+      <div className="settings-divider" />
+      <div className="switch-field">
+        <div className="switch-copy">
+          <span>每日后台唤醒</span>
+          <small>{wakeForm.enabled ? "已开启" : "已关闭"}</small>
+        </div>
+        <button
+          type="button"
+          className="switch-control"
+          role="switch"
+          aria-checked={wakeForm.enabled}
+          aria-label="每日后台唤醒"
+          onClick={() => setWakeForm({ ...wakeForm, enabled: !wakeForm.enabled })}
+        >
+          <span aria-hidden="true" />
+        </button>
+      </div>
+      <label>
+        <span>唤醒时间</span>
+        <input type="time" value={wakeForm.time} onChange={(event) => setWakeForm({ ...wakeForm, time: event.target.value })} />
+      </label>
+      <label>
+        <span>唤醒消息</span>
+        <input value={wakeForm.message} onChange={(event) => setWakeForm({ ...wakeForm, message: event.target.value })} />
+      </label>
+      <div className="settings-grid">
+        <div className="threshold-field">
+          <div className="field-label-row">
+            <label htmlFor="wake-primary-threshold">5小时已用大于</label>
+            <HelpTip label="5小时已用大于" text={WAKE_THRESHOLD_HELP.primary} />
+          </div>
+          <input
+            id="wake-primary-threshold"
+            type="number"
+            min={0}
+            max={100}
+            value={wakeForm.skipIfPrimaryUsedAbovePercent}
+            onChange={(event) => setWakeForm({ ...wakeForm, skipIfPrimaryUsedAbovePercent: event.target.value })}
+          />
+        </div>
+        <div className="threshold-field">
+          <div className="field-label-row">
+            <label htmlFor="wake-weekly-threshold">本周剩余小于</label>
+            <HelpTip label="本周剩余小于" text={WAKE_THRESHOLD_HELP.weekly} />
+          </div>
+          <input
+            id="wake-weekly-threshold"
+            type="number"
+            min={0}
+            max={100}
+            value={wakeForm.skipIfWeeklyRemainingBelowPercent}
+            onChange={(event) => setWakeForm({ ...wakeForm, skipIfWeeklyRemainingBelowPercent: event.target.value })}
+          />
+        </div>
+        <div className="threshold-field">
+          <div className="field-label-row">
+            <label htmlFor="wake-delta-threshold">异常增长大于</label>
+            <HelpTip label="异常增长大于" text={WAKE_THRESHOLD_HELP.delta} />
+          </div>
+          <input
+            id="wake-delta-threshold"
+            type="number"
+            min={0}
+            max={100}
+            value={wakeForm.maxPrimaryDeltaPercent}
+            onChange={(event) => setWakeForm({ ...wakeForm, maxPrimaryDeltaPercent: event.target.value })}
+          />
+        </div>
+      </div>
+      <div className="settings-actions">
+        <button className="primary-button settings-save" onClick={() => onSaveWake(currentWakeSettings())} disabled={busy}>
+          保存唤醒设置
+        </button>
+        <button className="icon-button settings-save" onClick={() => onRunWakeNow(currentWakeSettings())} disabled={busy}>
+          立即测试唤醒
+        </button>
+      </div>
     </section>
+  );
+}
+
+function HelpTip({ label, text }: { label: string; text: string }) {
+  return (
+    <button type="button" className="help-tip" aria-label={`说明：${label}`} data-tooltip={text} title={text}>
+      <CircleHelp size={13} aria-hidden="true" />
+    </button>
   );
 }
 
@@ -580,6 +882,23 @@ function waitForNextPaint() {
     }
     window.setTimeout(resolve, 0);
   });
+}
+
+function clientLogEntry(title: string, reason: unknown, level: AppLogEntry["level"]): AppLogEntry {
+  const timestampMillis = Date.now();
+  return {
+    id: `ui-${timestampMillis}-${Math.random().toString(36).slice(2)}`,
+    timestampMillis,
+    level,
+    source: "ui",
+    title,
+    message: reason instanceof Error ? reason.message : String(reason),
+  };
+}
+
+function formatLogTime(timestampMillis: number) {
+  const date = new Date(timestampMillis);
+  return `${padDatePart(date.getHours())}:${padDatePart(date.getMinutes())}`;
 }
 
 function statusLabel(identity: Identity) {

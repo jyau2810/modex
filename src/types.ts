@@ -23,6 +23,37 @@ export type Identity = {
   quota: QuotaDisplay;
 };
 
+export type DailyWakeSettings = {
+  enabled: boolean;
+  time: string;
+  message: string;
+  skipIfPrimaryUsedAbovePercent: number;
+  skipIfWeeklyRemainingBelowPercent: number;
+  maxPrimaryDeltaPercent: number;
+  lastRunDate?: string | null;
+};
+
+export type AppLogEntry = {
+  id: string;
+  runId?: string;
+  timestampMillis: number;
+  level: "info" | "warn" | "error" | string;
+  source: string;
+  identityName?: string | null;
+  title: string;
+  message: string;
+  decision?: string;
+  reason?: string | null;
+  primaryUsedPercent?: number | null;
+  weeklyRemainingPercent?: number | null;
+  thresholds?: {
+    skipIfPrimaryUsedAbovePercent: number;
+    skipIfWeeklyRemainingBelowPercent: number;
+    maxPrimaryDeltaPercent: number;
+  };
+  detail?: unknown;
+};
+
 export type AppSettings = {
   codexBinary: string;
   appName: string;
@@ -30,6 +61,7 @@ export type AppSettings = {
   sourceHome: string;
   hasCompletedSetup: boolean;
   currentIdentityName?: string | null;
+  dailyWake: DailyWakeSettings;
   isRefreshing: boolean;
   identities: Identity[];
 };

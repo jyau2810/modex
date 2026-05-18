@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use super::app_config::{
     default_app_config_path, load_app_settings_from_path, save_app_settings_to_path, AppIdentity,
-    AppSettings,
+    AppSettings, DailyWakeSettings,
 };
 use super::auth::{
     auth_identity_display_name, auth_identity_match_key, auth_plan_type, has_local_auth,
@@ -39,6 +39,7 @@ pub struct AppViewState {
     pub source_home: String,
     pub has_completed_setup: bool,
     pub current_identity_name: Option<String>,
+    pub daily_wake: DailyWakeSettings,
     #[serde(default)]
     pub is_refreshing: bool,
     pub identities: Vec<IdentityView>,
@@ -113,6 +114,7 @@ impl AppEngine {
             source_home: self.settings.source_home.display().to_string(),
             has_completed_setup: self.settings.has_completed_setup,
             current_identity_name: self.settings.current_identity_name.clone(),
+            daily_wake: self.settings.daily_wake.clone(),
             is_refreshing: false,
             identities: self
                 .settings
@@ -248,6 +250,17 @@ impl AppEngine {
         }
         self.save()?;
         Ok(self.app_state())
+    }
+
+    pub fn update_daily_wake(&mut self, settings: DailyWakeSettings) -> ModexResult<AppViewState> {
+        self.settings.daily_wake = sanitize_daily_wake_settings(settings);
+        self.save()?;
+        Ok(self.app_state())
+    }
+
+    pub fn set_daily_wake_last_run_date(&mut self, date: String) -> ModexResult<()> {
+        self.settings.daily_wake.last_run_date = Some(date);
+        self.save()
     }
 
     pub fn login_identity(&mut self, name: &str) -> ModexResult<ActionResult> {
@@ -438,6 +451,36 @@ fn clean_optional(value: Option<String>) -> Option<String> {
     value
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
+}
+
+fn sanitize_daily_wake_settings(mut settings: DailyWakeSettings) -> DailyWakeSettings {
+    settings.time = sanitize_wake_time(&settings.time);
+    settings.message = if settings.message.trim().is_empty() {
+        DailyWakeSettings::default().message
+    } else {
+        settings.message.trim().chars().take(120).collect()
+    };
+    settings.skip_if_primary_used_above_percent =
+        settings.skip_if_primary_used_above_percent.min(100);
+    settings.skip_if_weekly_remaining_below_percent =
+        settings.skip_if_weekly_remaining_below_percent.min(100);
+    settings.max_primary_delta_percent = settings.max_primary_delta_percent.min(100);
+    settings
+}
+
+fn sanitize_wake_time(value: &str) -> String {
+    let mut parts = value.split(':');
+    let hour = parts.next().and_then(|value| value.parse::<u8>().ok());
+    let minute = parts.next().and_then(|value| value.parse::<u8>().ok());
+    if parts.next().is_some() {
+        return DailyWakeSettings::default().time;
+    }
+    match (hour, minute) {
+        (Some(hour), Some(minute)) if hour < 24 && minute < 60 => {
+            format!("{hour:02}:{minute:02}")
+        }
+        _ => DailyWakeSettings::default().time,
+    }
 }
 
 fn managed_home_root(settings: &AppSettings) -> PathBuf {

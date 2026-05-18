@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use assert_fs::prelude::*;
 use modex_lib::core::app_config::{
     load_app_settings_from_path, save_app_settings_to_path, AppIdentity, AppSettings,
+    DailyWakeSettings,
 };
 
 #[test]
@@ -35,6 +36,7 @@ fn config_roundtrip_preserves_existing_fields() {
 
     assert_eq!(settings.codex_binary, "/usr/local/bin/codex");
     assert_eq!(settings.poll_seconds, 45);
+    assert_eq!(settings.daily_wake, DailyWakeSettings::default());
     assert_eq!(
         settings.current_identity_name.as_deref(),
         Some("team@example.com")
@@ -58,7 +60,56 @@ fn config_defaults_match_modex_conventions() {
     assert_eq!(settings.app_name, "Codex");
     assert_eq!(settings.poll_seconds, 60);
     assert_eq!(settings.source_home, PathBuf::from("/Users/alex/.codex"));
+    assert_eq!(settings.daily_wake, DailyWakeSettings::default());
     assert!(settings.identities.is_empty());
+}
+
+#[test]
+fn daily_wake_settings_roundtrip_custom_values() {
+    let temp = assert_fs::TempDir::new().unwrap();
+    let config = temp.child("config.json");
+    config
+        .write_str(
+            r#"{
+  "version": 1,
+  "codexBinary": "codex",
+  "appName": "Codex",
+  "pollSeconds": 60,
+  "sourceHome": "/Users/alex/.codex",
+  "dailyWake": {
+    "enabled": true,
+    "time": "09:15",
+    "message": "Good morning",
+    "skipIfPrimaryUsedAbovePercent": 3,
+    "skipIfWeeklyRemainingBelowPercent": 20,
+    "maxPrimaryDeltaPercent": 3,
+    "lastRunDate": "2026-05-18"
+  },
+  "identities": []
+}"#,
+        )
+        .unwrap();
+
+    let settings = load_app_settings_from_path(config.path()).unwrap();
+
+    assert!(settings.daily_wake.enabled);
+    assert_eq!(settings.daily_wake.time, "09:15");
+    assert_eq!(settings.daily_wake.message, "Good morning");
+    assert_eq!(settings.daily_wake.skip_if_primary_used_above_percent, 3);
+    assert_eq!(
+        settings.daily_wake.skip_if_weekly_remaining_below_percent,
+        20
+    );
+    assert_eq!(settings.daily_wake.max_primary_delta_percent, 3);
+    assert_eq!(
+        settings.daily_wake.last_run_date.as_deref(),
+        Some("2026-05-18")
+    );
+
+    save_app_settings_to_path(&settings, config.path()).unwrap();
+    let saved = load_app_settings_from_path(config.path()).unwrap();
+
+    assert_eq!(saved.daily_wake, settings.daily_wake);
 }
 
 #[test]

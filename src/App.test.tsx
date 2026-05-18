@@ -16,6 +16,9 @@ const mockApi = vi.hoisted(() => ({
   refreshIdentity: vi.fn(),
   refreshAll: vi.fn(),
   updateSettings: vi.fn(),
+  updateDailyWakeSettings: vi.fn(),
+  runDailyWakeNow: vi.fn(),
+  getRecentLogEntries: vi.fn(),
   openIdentityDirectory: vi.fn(),
 }));
 
@@ -43,6 +46,15 @@ function state(overrides: Partial<AppSettings> = {}): AppSettings {
     sourceHome: "/Users/alex/.codex",
     hasCompletedSetup: true,
     currentIdentityName: "team@example.com",
+    dailyWake: {
+      enabled: false,
+      time: "08:30",
+      message: "Good morning",
+      skipIfPrimaryUsedAbovePercent: 3,
+      skipIfWeeklyRemainingBelowPercent: 20,
+      maxPrimaryDeltaPercent: 3,
+      lastRunDate: null,
+    },
     isRefreshing: false,
     identities: [
       {
@@ -114,6 +126,7 @@ describe("App", () => {
       identity: null,
       imported: false,
     });
+    mockApi.getRecentLogEntries.mockResolvedValue([]);
   });
 
   afterEach(() => {
@@ -203,7 +216,7 @@ describe("App", () => {
 
     const styles = readFileSync(join(process.cwd(), "src/styles.css"), "utf8");
     expect(styles).toMatch(/\.account-list\s*{[^}]*overflow:\s*auto/s);
-    expect(styles).not.toMatch(/\.settings-content\s*{[^}]*overflow:\s*auto/s);
+    expect(styles).toMatch(/\.settings-content\s*{[^}]*overflow:\s*auto/s);
   });
 
   it("switches accounts from the workbench row action", async () => {
@@ -330,6 +343,66 @@ describe("App", () => {
     expect(screen.queryByText("Codex 未退出，账号切换已取消。")).not.toBeInTheDocument();
     expect(screen.getByRole("article", { name: /team@example.com/ })).toHaveClass("current");
     expect(screen.getByRole("article", { name: /backup@example.com/ })).not.toHaveClass("current");
+  });
+
+  it("routes action failures into the collapsed log panel with an unread dot", async () => {
+    mockApi.getAppState.mockResolvedValue(
+      state({
+        identities: state().identities.map((identity) =>
+          identity.name === "backup@example.com" ? { ...identity, loggedIn: true, loginExpired: false } : identity,
+        ),
+      }),
+    );
+    mockApi.switchIdentity.mockRejectedValue(new Error("Codex 未退出，账号切换已取消。"));
+
+    render(<App />);
+
+    const backupRow = await screen.findByRole("article", { name: /backup@example.com/ });
+    await userEvent.click(within(backupRow).getByRole("button", { name: /切换到 backup@example.com/ }));
+
+    await waitFor(() => expect(mockApi.switchIdentity).toHaveBeenCalledWith("backup@example.com"));
+    expect(screen.queryByText("Codex 未退出，账号切换已取消。")).not.toBeInTheDocument();
+
+    const logButton = screen.getByRole("button", { name: "打开日志" });
+    expect(logButton.querySelector(".unread-dot")).toBeInTheDocument();
+
+    await userEvent.click(logButton);
+
+    const panel = await screen.findByRole("region", { name: "日志" });
+    expect(within(panel).getByText("操作失败")).toBeInTheDocument();
+    expect(within(panel).getByText(/Codex 未退出/)).toBeInTheDocument();
+    expect(logButton.querySelector(".unread-dot")).not.toBeInTheDocument();
+  });
+
+  it("keeps the log panel main-screen only and lets the toolbar button toggle it", async () => {
+    mockApi.getAppState.mockResolvedValue(state());
+
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "Modex", level: 1 });
+    const logButton = screen.getByRole("button", { name: "打开日志" });
+    await userEvent.click(logButton);
+
+    expect(await screen.findByRole("region", { name: "日志" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "关闭日志" })).toHaveAttribute("aria-pressed", "true");
+    await userEvent.click(screen.getByRole("button", { name: "关闭日志" }));
+
+    expect(screen.queryByRole("region", { name: "日志" })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "打开日志" }));
+    expect(await screen.findByRole("region", { name: "日志" })).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "打开全局设置" }));
+
+    expect(screen.queryByRole("region", { name: "日志" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "打开日志" })).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "返回账号" }));
+    expect(screen.getByRole("button", { name: "关闭日志" })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "日志" })).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "关闭日志面板" }));
+
+    expect(screen.queryByRole("region", { name: "日志" })).not.toBeInTheDocument();
   });
 
   it("renders a newly added account and unlocks row actions while browser login is still pending", async () => {
@@ -803,11 +876,181 @@ describe("App", () => {
         pollSeconds: 90,
       });
     });
+    expect(await screen.findByRole("status")).toHaveTextContent("全局设置已保存");
+  });
+
+  it("saves settings without disabling the settings UI or reloading state", async () => {
+    let resolveSettings!: (settings: AppSettings) => void;
+    const saveSettings = new Promise<AppSettings>((resolve) => {
+      resolveSettings = resolve;
+    });
+    mockApi.getAppState.mockResolvedValue(state());
+    mockApi.updateSettings.mockReturnValue(saveSettings);
+
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "Modex", level: 1 });
+    await userEvent.click(screen.getByRole("button", { name: "打开全局设置" }));
+    await userEvent.clear(screen.getByLabelText("Codex CLI"));
+    await userEvent.type(screen.getByLabelText("Codex CLI"), "/quiet/codex");
+    await userEvent.click(screen.getByRole("button", { name: "保存全局设置" }));
+
+    await waitFor(() => expect(mockApi.updateSettings).toHaveBeenCalled());
+    expect(screen.getByRole("button", { name: "保存全局设置" })).not.toBeDisabled();
+    expect(screen.getByRole("button", { name: "保存唤醒设置" })).not.toBeDisabled();
+    expect(screen.getByLabelText("Codex CLI")).toHaveValue("/quiet/codex");
+    expect(mockApi.getAppState).toHaveBeenCalledTimes(1);
+
+    resolveSettings(state({ codexBinary: "/quiet/codex" }));
+
+    expect(await screen.findByRole("status")).toHaveTextContent("全局设置已保存");
+    expect(mockApi.getAppState).toHaveBeenCalledTimes(1);
+  });
+
+  it("renders and saves daily wake settings", async () => {
+    mockApi.getAppState.mockResolvedValue(state());
+    mockApi.updateDailyWakeSettings.mockResolvedValue(
+      state({
+        dailyWake: {
+          ...state().dailyWake,
+          enabled: true,
+          time: "09:15",
+          skipIfPrimaryUsedAbovePercent: 3,
+          skipIfWeeklyRemainingBelowPercent: 20,
+        },
+      }),
+    );
+
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "Modex", level: 1 });
+    await userEvent.click(screen.getByRole("button", { name: "打开全局设置" }));
+    const wakeSwitch = screen.getByRole("switch", { name: "每日后台唤醒" });
+    expect(wakeSwitch).toHaveAttribute("aria-checked", "false");
+    await userEvent.click(wakeSwitch);
+    expect(wakeSwitch).toHaveAttribute("aria-checked", "true");
+    await userEvent.clear(screen.getByLabelText("唤醒时间"));
+    await userEvent.type(screen.getByLabelText("唤醒时间"), "09:15");
+    await userEvent.clear(screen.getByLabelText("5小时已用大于"));
+    await userEvent.type(screen.getByLabelText("5小时已用大于"), "3");
+    await userEvent.clear(screen.getByLabelText("本周剩余小于"));
+    await userEvent.type(screen.getByLabelText("本周剩余小于"), "20");
+    await userEvent.click(screen.getByRole("button", { name: "保存唤醒设置" }));
+
+    await waitFor(() =>
+      expect(mockApi.updateDailyWakeSettings).toHaveBeenCalledWith({
+        enabled: true,
+        time: "09:15",
+        message: "Good morning",
+        skipIfPrimaryUsedAbovePercent: 3,
+        skipIfWeeklyRemainingBelowPercent: 20,
+        maxPrimaryDeltaPercent: 3,
+        lastRunDate: null,
+      }),
+    );
+    expect(await screen.findByRole("status")).toHaveTextContent("唤醒设置已保存");
+  });
+
+  it("runs an immediate daily wake test from settings", async () => {
+    mockApi.getAppState.mockResolvedValue(state());
+    mockApi.updateDailyWakeSettings.mockResolvedValue(
+      state({
+        dailyWake: {
+          ...state().dailyWake,
+          message: "Wake test",
+        },
+      }),
+    );
+    mockApi.runDailyWakeNow.mockResolvedValue({
+      ok: true,
+      message: "已完成一次测试唤醒，详情见日志。",
+    });
+
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "Modex", level: 1 });
+    await userEvent.click(screen.getByRole("button", { name: "打开全局设置" }));
+    await userEvent.clear(screen.getByLabelText("唤醒消息"));
+    await userEvent.type(screen.getByLabelText("唤醒消息"), "Wake test");
+    await userEvent.click(screen.getByRole("button", { name: "立即测试唤醒" }));
+
+    await waitFor(() =>
+      expect(mockApi.updateDailyWakeSettings).toHaveBeenCalledWith({
+        enabled: false,
+        time: "08:30",
+        message: "Wake test",
+        skipIfPrimaryUsedAbovePercent: 3,
+        skipIfWeeklyRemainingBelowPercent: 20,
+        maxPrimaryDeltaPercent: 3,
+        lastRunDate: null,
+      }),
+    );
+    await waitFor(() => expect(mockApi.runDailyWakeNow).toHaveBeenCalledTimes(1));
+    expect(await screen.findByRole("status")).toHaveTextContent("测试唤醒已完成");
+  });
+
+  it("shows failure notices when settings saves fail", async () => {
+    mockApi.getAppState.mockResolvedValue(state());
+    mockApi.updateSettings.mockRejectedValueOnce(new Error("config is locked"));
+    mockApi.updateDailyWakeSettings.mockRejectedValueOnce(new Error("invalid wake time"));
+
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "Modex", level: 1 });
+    await userEvent.click(screen.getByRole("button", { name: "打开全局设置" }));
+    await userEvent.click(screen.getByRole("button", { name: "保存全局设置" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("全局设置保存失败");
+    expect(screen.getByRole("alert")).toHaveTextContent("config is locked");
+
+    await userEvent.click(screen.getByRole("button", { name: "保存唤醒设置" }));
+
+    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("唤醒设置保存失败"));
+    expect(screen.getByRole("alert")).toHaveTextContent("invalid wake time");
+  });
+
+  it("explains wake thresholds with hover help icons", async () => {
+    mockApi.getAppState.mockResolvedValue(state());
+
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "Modex", level: 1 });
+    await userEvent.click(screen.getByRole("button", { name: "打开全局设置" }));
+
+    expect(screen.getByRole("button", { name: "说明：5小时已用大于" })).toHaveAttribute(
+      "data-tooltip",
+      expect.stringContaining("5小时用量高于该百分比时跳过唤醒"),
+    );
+    expect(screen.getByRole("button", { name: "说明：本周剩余小于" })).toHaveAttribute(
+      "data-tooltip",
+      expect.stringContaining("周额度剩余低于该百分比时跳过唤醒"),
+    );
+    expect(screen.getByRole("button", { name: "说明：异常增长大于" })).toHaveAttribute(
+      "data-tooltip",
+      expect.stringContaining("唤醒后5小时用量增长超过该百分比"),
+    );
+
+    const styles = readFileSync(join(process.cwd(), "src/styles.css"), "utf8");
+    expect(styles).toMatch(/\.help-tip:hover::after/s);
+    expect(styles).toMatch(/\.field-label-row\s*{[^}]*display:\s*flex/s);
   });
 
   it("does not define CSS gradients", () => {
     const styles = readFileSync(join(process.cwd(), "src/styles.css"), "utf8");
 
     expect(styles).not.toMatch(/gradient/i);
+  });
+
+  it("uses a floating right-side log panel and scrollable settings content", () => {
+    const styles = readFileSync(join(process.cwd(), "src/styles.css"), "utf8");
+
+    expect(styles).toMatch(/\.workspace\s*{[^}]*position:\s*relative/s);
+    expect(styles).toMatch(/\.log-panel\s*{[^}]*position:\s*absolute/s);
+    expect(styles).toMatch(/\.log-panel\s*{[^}]*right:\s*20px/s);
+    expect(styles).toMatch(/\.log-panel\s*{[^}]*bottom:\s*20px/s);
+    expect(styles).toMatch(/\.log-panel\s*{[^}]*border-left:\s*1px solid/s);
+    expect(styles).toMatch(/\.log-entry::before\s*{[^}]*border-radius:\s*999px/s);
+    expect(styles).toMatch(/\.switch-control\s*{[^}]*border-radius:\s*999px/s);
+    expect(styles).toMatch(/\.settings-content\s*{[^}]*overflow:\s*auto/s);
   });
 });

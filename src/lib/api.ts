@@ -1,5 +1,13 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { ActionResult, AppSettings, Identity, ImportIdentityResult, SettingsPatch } from "../types";
+import type {
+  ActionResult,
+  AppLogEntry,
+  AppSettings,
+  DailyWakeSettings,
+  Identity,
+  ImportIdentityResult,
+  SettingsPatch,
+} from "../types";
 
 export const modexApi = {
   getAppState: () => invoke<AppSettings>("get_app_state"),
@@ -12,5 +20,9 @@ export const modexApi = {
   refreshAll: () => invoke<Identity[]>("refresh_all"),
   updateSettings: (settingsPatch: SettingsPatch) =>
     invoke<AppSettings>("update_settings", { settingsPatch }),
+  updateDailyWakeSettings: (dailyWake: DailyWakeSettings) =>
+    invoke<AppSettings>("update_daily_wake_settings", { dailyWake }),
+  runDailyWakeNow: () => invoke<ActionResult>("run_daily_wake_now"),
+  getRecentLogEntries: () => invoke<AppLogEntry[]>("get_recent_log_entries"),
   openIdentityDirectory: (name: string) => invoke<ActionResult>("open_identity_directory", { name }),
 };
