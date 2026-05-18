@@ -363,6 +363,34 @@ describe("App", () => {
     expect(screen.queryByRole("button", { name: /导入当前账号/ })).not.toBeInTheDocument();
   });
 
+  it("reloads state when automatic import reuses an existing account as current", async () => {
+    const initial = state({ currentIdentityName: "team@example.com" });
+    const reusedIdentity = { ...initial.identities[1], loggedIn: true, loginExpired: false, isCurrent: true };
+    mockApi.getAppState
+      .mockResolvedValueOnce(initial)
+      .mockResolvedValueOnce(
+        state({
+          currentIdentityName: "backup@example.com",
+          identities: initial.identities.map((identity) =>
+            identity.name === "backup@example.com" ? reusedIdentity : { ...identity, isCurrent: false },
+          ),
+        }),
+      );
+    mockApi.importCurrentIdentity.mockResolvedValue({
+      ok: true,
+      message: "账号已存在，未重复导入：backup@example.com",
+      identity: reusedIdentity,
+      imported: false,
+    });
+
+    render(<App />);
+
+    await waitFor(() => expect(mockApi.importCurrentIdentity).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(mockApi.getAppState).toHaveBeenCalledTimes(2));
+    expect(screen.getByRole("article", { name: /backup@example.com/ })).toHaveClass("current");
+    expect(mockApi.refreshIdentity).not.toHaveBeenCalled();
+  });
+
   it("does not show an error banner when automatic import finds no source login", async () => {
     mockApi.getAppState.mockResolvedValue(state());
     mockApi.importCurrentIdentity.mockResolvedValue({
@@ -531,11 +559,15 @@ describe("App", () => {
 
   it("shows global refresh loading and reloads state when refresh completes", async () => {
     let finishRefresh: (value: unknown) => void = () => undefined;
+    let dialogWasVisibleWhenRefreshStarted = false;
     mockApi.getAppState.mockResolvedValue(state());
     mockApi.refreshAll.mockImplementation(
-      () => new Promise((resolve) => {
-        finishRefresh = resolve;
-      }),
+      () => {
+        dialogWasVisibleWhenRefreshStarted = Boolean(screen.queryByRole("dialog", { name: "正在刷新账号信息" }));
+        return new Promise((resolve) => {
+          finishRefresh = resolve;
+        });
+      },
     );
 
     render(<App />);
@@ -546,6 +578,8 @@ describe("App", () => {
 
     await userEvent.click(refreshButton);
 
+    await waitFor(() => expect(mockApi.refreshAll).toHaveBeenCalledTimes(1));
+    expect(dialogWasVisibleWhenRefreshStarted).toBe(true);
     expect(refreshButton).toBeDisabled();
     expect(refreshButton).toHaveAttribute("aria-busy", "true");
     expect(await screen.findByRole("dialog", { name: "正在刷新账号信息" })).toBeInTheDocument();

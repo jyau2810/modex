@@ -253,6 +253,9 @@ fn refresh_identity_with_reader(
         Ok(snapshot) => engine.set_snapshot(name, snapshot),
         Err(error) => engine.set_error(name, error.to_string()),
     }
+    engine
+        .sync_current_identity_from_source_auth()
+        .map_err(|error| error.to_string())?;
     identity_view_from_engine(&engine, name)
 }
 
@@ -288,6 +291,9 @@ fn refresh_all_with_reader(
             Err(error) => engine.set_error(&name, error.to_string()),
         }
     }
+    engine
+        .sync_current_identity_from_source_auth()
+        .map_err(|error| error.to_string())?;
     Ok(engine.app_state().identities)
 }
 
@@ -424,6 +430,32 @@ mod tests {
 
     use super::*;
 
+    fn jwt_with_claims(claims: serde_json::Value) -> String {
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        use base64::Engine;
+        let header = URL_SAFE_NO_PAD.encode(r#"{"alg":"none"}"#);
+        let payload = URL_SAFE_NO_PAD.encode(claims.to_string());
+        format!("{header}.{payload}.signature")
+    }
+
+    fn auth_json(email: &str, sub: &str, account_id: &str, plan_type: &str) -> String {
+        let token = jwt_with_claims(serde_json::json!({
+            "email": email,
+            "sub": sub,
+            "https://api.openai.com/auth": {
+                "account_id": account_id,
+                "chatgpt_plan_type": plan_type
+            }
+        }));
+        serde_json::json!({
+            "tokens": {
+                "account_id": account_id,
+                "id_token": token
+            }
+        })
+        .to_string()
+    }
+
     #[test]
     fn refresh_all_releases_engine_lock_while_quota_reader_is_running() {
         let temp = assert_fs::TempDir::new().unwrap();
@@ -494,6 +526,66 @@ mod tests {
 
         assert_eq!(refreshed[0].quota.status, "available");
         assert_eq!(refreshed[0].quota.plan, "团队版");
+    }
+
+    #[test]
+    fn refresh_all_with_reader_updates_current_identity_from_source_auth() {
+        let temp = assert_fs::TempDir::new().unwrap();
+        let source_home = temp.path().join("source");
+        let team_home = temp.path().join(".modex/111111111111");
+        let backup_home = temp.path().join(".modex/222222222222");
+        std::fs::create_dir_all(&source_home).unwrap();
+        std::fs::create_dir_all(&team_home).unwrap();
+        std::fs::create_dir_all(&backup_home).unwrap();
+        std::fs::write(
+            team_home.join("auth.json"),
+            auth_json("team@example.com", "user-team", "acct-team", "team"),
+        )
+        .unwrap();
+        let backup_auth = auth_json("backup@example.com", "user-backup", "acct-backup", "team");
+        std::fs::write(backup_home.join("auth.json"), &backup_auth).unwrap();
+        std::fs::write(source_home.join("auth.json"), backup_auth).unwrap();
+        let mut settings = AppSettings::default_for_home(temp.path().to_path_buf());
+        settings.source_home = source_home;
+        settings.current_identity_name = Some("team@example.com · 团队版".to_string());
+        settings.identities.push(AppIdentity {
+            name: "team@example.com · 团队版".to_string(),
+            codex_home: team_home,
+            monitor: false,
+            workspace_id: None,
+        });
+        settings.identities.push(AppIdentity {
+            name: "backup@example.com · 团队版".to_string(),
+            codex_home: backup_home,
+            monitor: false,
+            workspace_id: None,
+        });
+        let state = ModexState::new(AppEngine::new(settings, temp.path().join("config.json")));
+        let guard = state.try_begin_refresh().unwrap();
+
+        let refreshed = refresh_all_with_reader(&state, guard, |_settings, identity| {
+            Ok(QuotaSnapshot {
+                identity: identity.name.clone(),
+                plan_type: Some("team".to_string()),
+                primary: None,
+                secondary: None,
+                credits_has_credits: Some(true),
+                credits_unlimited: Some(false),
+                reached_type: None,
+            })
+        })
+        .unwrap();
+
+        let team = refreshed
+            .iter()
+            .find(|identity| identity.name == "team@example.com · 团队版")
+            .unwrap();
+        let backup = refreshed
+            .iter()
+            .find(|identity| identity.name == "backup@example.com · 团队版")
+            .unwrap();
+        assert!(!team.is_current);
+        assert!(backup.is_current);
     }
 
     #[test]

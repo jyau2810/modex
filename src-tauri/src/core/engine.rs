@@ -168,6 +168,8 @@ impl AppEngine {
         }
 
         if let Some(existing_name) = self.identity_name_for_auth_home(&self.settings.source_home) {
+            self.settings.current_identity_name = Some(existing_name.clone());
+            self.save()?;
             let identity = self.identity(&existing_name)?;
             return Ok(ImportIdentityResult {
                 ok: true,
@@ -197,12 +199,9 @@ impl AppEngine {
             reserved_names,
         );
 
-        let had_no_identities = self.settings.identities.is_empty();
         self.settings.identities.push(identity.clone());
         self.settings.has_completed_setup = true;
-        if had_no_identities {
-            self.settings.current_identity_name = Some(identity.name.clone());
-        }
+        self.settings.current_identity_name = Some(identity.name.clone());
         self.save()?;
         let view = self.identity_view(&identity);
         Ok(ImportIdentityResult {
@@ -344,6 +343,16 @@ impl AppEngine {
             self.save()?;
         }
         Ok(changed)
+    }
+
+    pub fn sync_current_identity_from_source_auth(&mut self) -> ModexResult<bool> {
+        let current = self.identity_name_for_auth_home(&self.settings.source_home);
+        if self.settings.current_identity_name == current {
+            return Ok(false);
+        }
+        self.settings.current_identity_name = current;
+        self.save()?;
+        Ok(true)
     }
 
     fn identity_view(&self, identity: &AppIdentity) -> IdentityView {

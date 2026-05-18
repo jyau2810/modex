@@ -129,8 +129,50 @@ fn import_current_identity_reuses_existing_matching_account() {
     assert!(!temp.path().join(".modex/222222222222").exists());
     assert_eq!(
         engine.settings().current_identity_name.as_deref(),
-        Some("other@example.com")
+        Some("same@example.com · 团队版")
     );
+}
+
+#[test]
+fn import_current_identity_marks_new_import_as_current_even_when_accounts_exist() {
+    let temp = assert_fs::TempDir::new().unwrap();
+    let config = temp.child("config.json");
+    let source_home = temp.path().join("source");
+    let existing_home = temp.path().join(".modex/111111111111");
+    std::fs::create_dir_all(&source_home).unwrap();
+    std::fs::create_dir_all(&existing_home).unwrap();
+    std::fs::write(
+        source_home.join("auth.json"),
+        auth_json("new@example.com", "user-new", "acct-new", "team"),
+    )
+    .unwrap();
+    std::fs::write(
+        existing_home.join("auth.json"),
+        auth_json("old@example.com", "user-old", "acct-old", "team"),
+    )
+    .unwrap();
+    let mut settings = AppSettings::default_for_home(temp.path().to_path_buf());
+    settings.source_home = source_home;
+    settings.current_identity_name = Some("old@example.com · 团队版".to_string());
+    settings.has_completed_setup = true;
+    settings.identities.push(AppIdentity {
+        name: "old@example.com · 团队版".to_string(),
+        codex_home: existing_home,
+        monitor: false,
+        workspace_id: None,
+    });
+    let mut engine = AppEngine::new(settings, config.path().to_path_buf());
+
+    let result = engine
+        .import_current_identity_with_digits(|| "222222222222".to_string())
+        .unwrap();
+
+    assert!(result.imported);
+    assert_eq!(
+        engine.settings().current_identity_name.as_deref(),
+        Some("new@example.com · 团队版")
+    );
+    assert!(result.identity.unwrap().is_current);
 }
 
 #[test]

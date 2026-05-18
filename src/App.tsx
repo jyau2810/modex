@@ -44,8 +44,8 @@ function App() {
     if (autoImportAttempted.current) return;
     autoImportAttempted.current = true;
     const result = await modexApi.importCurrentIdentity();
-    if (!result.ok || !result.imported) return;
-    if (result.identity) {
+    if (!result.ok || !result.identity) return;
+    if (result.imported) {
       await modexApi.refreshIdentity(result.identity.name);
     }
     await loadState();
@@ -85,6 +85,7 @@ function App() {
     setBusy(label);
     setError(null);
     try {
+      await waitForNextPaint();
       await action();
       if (reload) {
         await loadState();
@@ -564,6 +565,16 @@ function formatResetTime(resetAt: number | null | undefined, label: string) {
 
 function padDatePart(value: number) {
   return String(value).padStart(2, "0");
+}
+
+function waitForNextPaint() {
+  return new Promise<void>((resolve) => {
+    if (typeof window.requestAnimationFrame === "function") {
+      window.requestAnimationFrame(() => window.setTimeout(resolve, 0));
+      return;
+    }
+    window.setTimeout(resolve, 0);
+  });
 }
 
 function statusLabel(identity: Identity) {
