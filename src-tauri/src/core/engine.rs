@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::fs;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -8,7 +9,8 @@ use super::app_config::{
     AppSettings,
 };
 use super::auth::{
-    auth_identity_display_name, auth_plan_type, has_local_auth, unique_identity_name,
+    auth_identity_display_name, auth_identity_match_key, auth_plan_type, has_local_auth,
+    unique_identity_name,
 };
 use super::codex::{activate_codex_app, open_codex_app, read_quota_snapshot, run_login};
 use super::identity_home::{default_new_identity, random_digits};
@@ -56,6 +58,15 @@ pub struct SettingsPatch {
 pub struct ActionResult {
     pub ok: bool,
     pub message: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportIdentityResult {
+    pub ok: bool,
+    pub message: String,
+    pub identity: Option<IdentityView>,
+    pub imported: bool,
 }
 
 pub struct AppEngine {
@@ -136,6 +147,70 @@ impl AppEngine {
         self.settings.has_completed_setup = true;
         self.save()?;
         Ok(self.identity_view(&identity))
+    }
+
+    pub fn import_current_identity(&mut self) -> ModexResult<ImportIdentityResult> {
+        self.import_current_identity_with_digits(random_digits)
+    }
+
+    pub fn import_current_identity_with_digits(
+        &mut self,
+        random_digits: impl FnMut() -> String,
+    ) -> ModexResult<ImportIdentityResult> {
+        let source_auth = self.settings.source_home.join("auth.json");
+        if !source_auth.exists() {
+            return Ok(ImportIdentityResult {
+                ok: false,
+                message: "当前 Codex 尚未登录，无法导入。".to_string(),
+                identity: None,
+                imported: false,
+            });
+        }
+
+        if let Some(existing_name) = self.identity_name_for_auth_home(&self.settings.source_home) {
+            let identity = self.identity(&existing_name)?;
+            return Ok(ImportIdentityResult {
+                ok: true,
+                message: format!("账号已存在，未重复导入：{existing_name}"),
+                identity: Some(self.identity_view(&identity)),
+                imported: false,
+            });
+        }
+
+        let home = managed_home_root(&self.settings);
+        let mut identity = default_new_identity(&home, random_digits)?;
+        let imported_home = identity.codex_home.clone();
+        if let Err(error) = copy_source_auth_to_identity_home(&source_auth, &imported_home) {
+            let _ = fs::remove_dir_all(&imported_home);
+            return Err(error);
+        }
+
+        let reserved_names = self
+            .settings
+            .identities
+            .iter()
+            .map(|identity| identity.name.as_str());
+        identity.name = unique_identity_name(
+            auth_identity_display_name(&imported_home)
+                .as_deref()
+                .unwrap_or("账号"),
+            reserved_names,
+        );
+
+        let had_no_identities = self.settings.identities.is_empty();
+        self.settings.identities.push(identity.clone());
+        self.settings.has_completed_setup = true;
+        if had_no_identities {
+            self.settings.current_identity_name = Some(identity.name.clone());
+        }
+        self.save()?;
+        let view = self.identity_view(&identity);
+        Ok(ImportIdentityResult {
+            ok: true,
+            message: format!("已导入账号：{}", view.name),
+            identity: Some(view),
+            imported: true,
+        })
     }
 
     pub fn delete_identity(&mut self, name: &str) -> ModexResult<ActionResult> {
@@ -333,6 +408,15 @@ impl AppEngine {
             .iter()
             .position(|identity| identity.name == name)
     }
+
+    fn identity_name_for_auth_home(&self, codex_home: &std::path::Path) -> Option<String> {
+        let key = auth_identity_match_key(codex_home)?;
+        self.settings
+            .identities
+            .iter()
+            .find(|identity| auth_identity_match_key(&identity.codex_home).as_deref() == Some(&key))
+            .map(|identity| identity.name.clone())
+    }
 }
 
 fn clean_optional(value: Option<String>) -> Option<String> {
@@ -348,4 +432,24 @@ fn managed_home_root(settings: &AppSettings) -> PathBuf {
         .map(PathBuf::from)
         .or_else(dirs::home_dir)
         .unwrap_or_else(|| PathBuf::from("."))
+}
+
+fn copy_source_auth_to_identity_home(
+    source_auth: &std::path::Path,
+    identity_home: &std::path::Path,
+) -> ModexResult<()> {
+    fs::create_dir_all(identity_home)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(identity_home, fs::Permissions::from_mode(0o700));
+    }
+    let target_auth = identity_home.join("auth.json");
+    fs::copy(source_auth, &target_auth)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(&target_auth, fs::Permissions::from_mode(0o600));
+    }
+    Ok(())
 }

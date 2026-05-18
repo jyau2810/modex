@@ -1,9 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { ActionResult, AppSettings, Identity, SettingsPatch } from "../types";
+import type { ActionResult, AppSettings, Identity, ImportIdentityResult, SettingsPatch } from "../types";
 
 export const modexApi = {
   getAppState: () => invoke<AppSettings>("get_app_state"),
   addIdentity: () => invoke<Identity>("add_identity"),
+  importCurrentIdentity: () => invoke<ImportIdentityResult>("import_current_identity"),
   deleteIdentity: (name: string) => invoke<ActionResult>("delete_identity", { name }),
   switchIdentity: (name: string) => invoke<ActionResult>("switch_identity", { name }),
   loginIdentity: (name: string) => invoke<ActionResult>("login_identity", { name }),

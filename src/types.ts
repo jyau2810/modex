@@ -40,3 +40,8 @@ export type ActionResult = {
   ok: boolean;
   message: string;
 };
+
+export type ImportIdentityResult = ActionResult & {
+  identity?: Identity | null;
+  imported: boolean;
+};

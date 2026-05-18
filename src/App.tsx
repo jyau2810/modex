@@ -11,7 +11,7 @@ import {
   Settings,
   Trash2,
 } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { modexApi } from "./lib/api";
 import type { AppSettings, Identity, SettingsPatch } from "./types";
 
@@ -32,6 +32,7 @@ function App() {
   const [refreshEventActive, setRefreshEventActive] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
+  const autoImportAttempted = useRef(false);
 
   const loadState = useCallback(async () => {
     const next = await modexApi.getAppState();
@@ -39,8 +40,26 @@ function App() {
     setRefreshEventActive(next.isRefreshing);
   }, []);
 
+  const autoImportCurrentIdentity = useCallback(async () => {
+    if (autoImportAttempted.current) return;
+    autoImportAttempted.current = true;
+    const result = await modexApi.importCurrentIdentity();
+    if (!result.ok || !result.imported) return;
+    if (result.identity) {
+      await modexApi.refreshIdentity(result.identity.name);
+    }
+    await loadState();
+  }, [loadState]);
+
   useEffect(() => {
-    loadState().catch((reason) => setError(String(reason)));
+    let cancelled = false;
+    const bootstrap = async () => {
+      await loadState();
+      if (!cancelled) {
+        await autoImportCurrentIdentity();
+      }
+    };
+    bootstrap().catch((reason) => setError(String(reason)));
 
     const openSettings = listen("modex://open-settings", () => setView("settings"));
     const stateUpdated = listen("modex://state-updated", () => {
@@ -53,12 +72,13 @@ function App() {
     });
 
     return () => {
+      cancelled = true;
       openSettings.then((cleanup) => cleanup()).catch(() => undefined);
       stateUpdated.then((cleanup) => cleanup()).catch(() => undefined);
       refreshStarted.then((cleanup) => cleanup()).catch(() => undefined);
       refreshFinished.then((cleanup) => cleanup()).catch(() => undefined);
     };
-  }, [loadState]);
+  }, [autoImportCurrentIdentity, loadState]);
 
   const runAction = useCallback(async (label: string, action: () => Promise<unknown>, options: ActionOptions = {}) => {
     const { reload = true } = options;

@@ -9,6 +9,7 @@ import type { AppSettings } from "./types";
 const mockApi = vi.hoisted(() => ({
   getAppState: vi.fn(),
   addIdentity: vi.fn(),
+  importCurrentIdentity: vi.fn(),
   deleteIdentity: vi.fn(),
   switchIdentity: vi.fn(),
   loginIdentity: vi.fn(),
@@ -107,6 +108,12 @@ describe("App", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     eventMocks.listeners.clear();
+    mockApi.importCurrentIdentity.mockResolvedValue({
+      ok: false,
+      message: "当前 Codex 尚未登录，无法导入。",
+      identity: null,
+      imported: false,
+    });
   });
 
   afterEach(() => {
@@ -120,6 +127,7 @@ describe("App", () => {
 
     expect(await screen.findByRole("heading", { name: "暂无账号", level: 3 })).toBeInTheDocument();
     expect(screen.getAllByRole("button", { name: /新增账号/ }).length).toBeGreaterThan(0);
+    expect(screen.queryByRole("button", { name: /导入当前账号/ })).not.toBeInTheDocument();
   });
 
   it("renders accounts as the main workbench without selected-account detail controls", async () => {
@@ -314,6 +322,63 @@ describe("App", () => {
     expect(mockApi.getAppState).toHaveBeenCalledTimes(2);
     expect(within(pendingRow).getByRole("button", { name: /删除 登录中/ })).not.toBeDisabled();
     expect(screen.queryByText(/已打开浏览器登录/)).not.toBeInTheDocument();
+  });
+
+  it("automatically imports the current Codex account on startup and refreshes it", async () => {
+    const importedIdentity = {
+      name: "imported@example.com · 团队版",
+      codexHome: "/Users/alex/.modex/333333333333",
+      loggedIn: true,
+      loginExpired: false,
+      isCurrent: false,
+      quota: {
+        status: "unknown" as const,
+        plan: "团队版",
+        primaryLabel: "5小时已用 -",
+        primaryPercent: 0,
+        primaryResetAt: null,
+        secondaryLabel: "每周已用 -",
+        secondaryPercent: 0,
+        secondaryResetAt: null,
+        credits: "额度未知",
+      },
+    };
+    mockApi.getAppState
+      .mockResolvedValueOnce(state())
+      .mockResolvedValue(state({ identities: [...state().identities, importedIdentity] }));
+    mockApi.importCurrentIdentity.mockResolvedValue({
+      ok: true,
+      message: "已导入账号：imported@example.com · 团队版",
+      identity: importedIdentity,
+      imported: true,
+    });
+    mockApi.refreshIdentity.mockResolvedValue(importedIdentity);
+
+    render(<App />);
+
+    await waitFor(() => expect(mockApi.importCurrentIdentity).toHaveBeenCalledTimes(1));
+    expect(mockApi.refreshIdentity).toHaveBeenCalledWith("imported@example.com · 团队版");
+    expect(await screen.findByRole("article", { name: /imported@example.com/ })).toBeInTheDocument();
+    expect(screen.queryByText(/已导入账号/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /导入当前账号/ })).not.toBeInTheDocument();
+  });
+
+  it("does not show an error banner when automatic import finds no source login", async () => {
+    mockApi.getAppState.mockResolvedValue(state());
+    mockApi.importCurrentIdentity.mockResolvedValue({
+      ok: false,
+      message: "当前 Codex 尚未登录，无法导入。",
+      identity: null,
+      imported: false,
+    });
+
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "Modex", level: 1 });
+
+    await waitFor(() => expect(mockApi.importCurrentIdentity).toHaveBeenCalledTimes(1));
+    expect(screen.queryByText("当前 Codex 尚未登录，无法导入。")).not.toBeInTheDocument();
+    expect(mockApi.refreshIdentity).not.toHaveBeenCalled();
   });
 
   it("refreshes quota for the matching account after browser login succeeds", async () => {

@@ -18,6 +18,24 @@ pub fn auth_identity_display_name(codex_home: &Path) -> Option<String> {
     }
 }
 
+pub fn auth_identity_match_key(codex_home: &Path) -> Option<String> {
+    let raw = read_auth_json(codex_home)?;
+    let tokens = raw.get("tokens")?.as_object()?;
+    let account_id = tokens
+        .get("account_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let claims = auth_id_token_claims(codex_home);
+    let subject = claim_text(claims.get("sub"));
+    match (account_id, subject) {
+        (Some(account_id), Some(subject)) => Some(format!("{account_id}:{subject}")),
+        (Some(account_id), None) => Some(account_id.to_string()),
+        (None, Some(subject)) => Some(subject),
+        (None, None) => None,
+    }
+}
+
 pub fn unique_identity_name<'a>(
     base_name: &str,
     reserved: impl Iterator<Item = &'a str>,

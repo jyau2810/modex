@@ -8,7 +8,9 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::core::app_config::{AppIdentity, AppSettings};
 use crate::core::codex::read_quota_snapshot;
-use crate::core::engine::{ActionResult, AppEngine, AppViewState, IdentityView, SettingsPatch};
+use crate::core::engine::{
+    ActionResult, AppEngine, AppViewState, IdentityView, ImportIdentityResult, SettingsPatch,
+};
 use crate::core::quota::QuotaSnapshot;
 
 pub const STATE_UPDATED_EVENT: &str = "modex://state-updated";
@@ -63,6 +65,16 @@ pub fn add_identity(app: AppHandle, state: State<'_, ModexState>) -> Result<Iden
     let identity = with_engine(&state, |engine| engine.add_identity())?;
     refresh_tray(&app);
     Ok(identity)
+}
+
+#[tauri::command]
+pub fn import_current_identity(
+    app: AppHandle,
+    state: State<'_, ModexState>,
+) -> Result<ImportIdentityResult, String> {
+    let result = with_engine(&state, |engine| engine.import_current_identity())?;
+    refresh_tray(&app);
+    Ok(result)
 }
 
 #[tauri::command]

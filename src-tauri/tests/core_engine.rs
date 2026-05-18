@@ -12,6 +12,24 @@ fn jwt_with_claims(claims: serde_json::Value) -> String {
     format!("{header}.{payload}.signature")
 }
 
+fn auth_json(email: &str, sub: &str, account_id: &str, plan_type: &str) -> String {
+    let token = jwt_with_claims(serde_json::json!({
+        "email": email,
+        "sub": sub,
+        "https://api.openai.com/auth": {
+            "account_id": account_id,
+            "chatgpt_plan_type": plan_type
+        }
+    }));
+    serde_json::json!({
+        "tokens": {
+            "account_id": account_id,
+            "id_token": token
+        }
+    })
+    .to_string()
+}
+
 #[test]
 fn add_identity_persists_new_managed_identity() {
     let temp = assert_fs::TempDir::new().unwrap();
@@ -30,6 +48,138 @@ fn add_identity_persists_new_managed_identity() {
     let saved = load_app_settings_from_path(config.path()).unwrap();
     assert_eq!(saved.identities.len(), 1);
     assert!(saved.has_completed_setup);
+}
+
+#[test]
+fn import_current_identity_copies_only_source_auth_to_managed_home() {
+    let temp = assert_fs::TempDir::new().unwrap();
+    let config = temp.child("config.json");
+    let source_home = temp.path().join("source");
+    std::fs::create_dir_all(&source_home).unwrap();
+    let auth = auth_json("yaoji@example.com", "user-yaoji", "acct-team", "team");
+    std::fs::write(source_home.join("auth.json"), &auth).unwrap();
+    std::fs::write(source_home.join("config.toml"), "model = 'keep-out'\n").unwrap();
+    std::fs::write(source_home.join("state_5.sqlite"), "runtime").unwrap();
+    std::fs::create_dir(source_home.join("logs")).unwrap();
+    std::fs::write(source_home.join("logs/codex.log"), "runtime log").unwrap();
+    let mut settings = AppSettings::default_for_home(temp.path().to_path_buf());
+    settings.source_home = source_home;
+    let mut engine = AppEngine::new(settings, config.path().to_path_buf());
+
+    let result = engine
+        .import_current_identity_with_digits(|| "123456789012".to_string())
+        .unwrap();
+
+    assert!(result.ok);
+    assert!(result.imported);
+    let identity = result.identity.unwrap();
+    assert_eq!(identity.name, "yaoji@example.com · 团队版");
+    assert!(identity.logged_in);
+    let imported_home = temp.path().join(".modex/123456789012");
+    assert_eq!(identity.codex_home, imported_home.display().to_string());
+    assert_eq!(
+        std::fs::read_to_string(imported_home.join("auth.json")).unwrap(),
+        auth
+    );
+    let imported_files = std::fs::read_dir(&imported_home)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(imported_files, vec!["auth.json"]);
+    assert_eq!(
+        engine.settings().current_identity_name.as_deref(),
+        Some("yaoji@example.com · 团队版")
+    );
+    let saved = load_app_settings_from_path(config.path()).unwrap();
+    assert_eq!(saved.identities.len(), 1);
+    assert!(saved.has_completed_setup);
+}
+
+#[test]
+fn import_current_identity_reuses_existing_matching_account() {
+    let temp = assert_fs::TempDir::new().unwrap();
+    let config = temp.child("config.json");
+    let source_home = temp.path().join("source");
+    let existing_home = temp.path().join(".modex/111111111111");
+    std::fs::create_dir_all(&source_home).unwrap();
+    std::fs::create_dir_all(&existing_home).unwrap();
+    let auth = auth_json("same@example.com", "user-same", "acct-same", "team");
+    std::fs::write(source_home.join("auth.json"), &auth).unwrap();
+    std::fs::write(existing_home.join("auth.json"), &auth).unwrap();
+    let mut settings = AppSettings::default_for_home(temp.path().to_path_buf());
+    settings.source_home = source_home;
+    settings.current_identity_name = Some("other@example.com".to_string());
+    settings.has_completed_setup = true;
+    settings.identities.push(AppIdentity {
+        name: "same@example.com · 团队版".to_string(),
+        codex_home: existing_home,
+        monitor: false,
+        workspace_id: None,
+    });
+    let mut engine = AppEngine::new(settings, config.path().to_path_buf());
+
+    let result = engine
+        .import_current_identity_with_digits(|| "222222222222".to_string())
+        .unwrap();
+
+    assert!(result.ok);
+    assert!(!result.imported);
+    assert_eq!(result.identity.unwrap().name, "same@example.com · 团队版");
+    assert_eq!(engine.settings().identities.len(), 1);
+    assert!(!temp.path().join(".modex/222222222222").exists());
+    assert_eq!(
+        engine.settings().current_identity_name.as_deref(),
+        Some("other@example.com")
+    );
+}
+
+#[test]
+fn import_current_identity_without_source_auth_leaves_settings_unchanged() {
+    let temp = assert_fs::TempDir::new().unwrap();
+    let config = temp.child("config.json");
+    let source_home = temp.path().join("source");
+    std::fs::create_dir_all(&source_home).unwrap();
+    let mut settings = AppSettings::default_for_home(temp.path().to_path_buf());
+    settings.source_home = source_home;
+    settings.has_completed_setup = true;
+    let mut engine = AppEngine::new(settings, config.path().to_path_buf());
+
+    let result = engine
+        .import_current_identity_with_digits(|| "123456789012".to_string())
+        .unwrap();
+
+    assert!(!result.ok);
+    assert!(!result.imported);
+    assert!(result.identity.is_none());
+    assert!(result.message.contains("尚未登录"));
+    assert!(engine.settings().identities.is_empty());
+    assert!(engine.settings().has_completed_setup);
+    assert!(!config.path().exists());
+}
+
+#[test]
+fn import_current_identity_with_unparseable_auth_uses_fallback_account_name() {
+    let temp = assert_fs::TempDir::new().unwrap();
+    let config = temp.child("config.json");
+    let source_home = temp.path().join("source");
+    std::fs::create_dir_all(&source_home).unwrap();
+    std::fs::write(
+        source_home.join("auth.json"),
+        serde_json::json!({"tokens": {"id_token": "not-a-jwt"}}).to_string(),
+    )
+    .unwrap();
+    let mut settings = AppSettings::default_for_home(temp.path().to_path_buf());
+    settings.source_home = source_home;
+    let mut engine = AppEngine::new(settings, config.path().to_path_buf());
+
+    let result = engine
+        .import_current_identity_with_digits(|| "123456789012".to_string())
+        .unwrap();
+
+    assert!(result.ok);
+    assert!(result.imported);
+    assert_eq!(result.identity.unwrap().name, "账号");
+    assert_eq!(engine.settings().identities[0].name, "账号");
 }
 
 #[test]
