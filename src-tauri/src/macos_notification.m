@@ -21,16 +21,10 @@ void modex_log_notification_settings(void);
        willPresentNotification:(UNNotification *)notification
          withCompletionHandler:
              (void (^)(UNNotificationPresentationOptions options))completionHandler {
-  if (@available(macOS 11.0, *)) {
-    modex_log_notification_event(@"un_will_present_banner");
-    completionHandler(UNNotificationPresentationOptionBanner |
-                      UNNotificationPresentationOptionList |
-                      UNNotificationPresentationOptionSound);
-  } else {
-    modex_log_notification_event(@"un_will_present_alert");
-    completionHandler(UNNotificationPresentationOptionAlert |
-                      UNNotificationPresentationOptionSound);
-  }
+  modex_log_notification_event(@"un_will_present_banner");
+  completionHandler(UNNotificationPresentationOptionBanner |
+                    UNNotificationPresentationOptionList |
+                    UNNotificationPresentationOptionSound);
 }
 
 @end
@@ -132,9 +126,11 @@ int modex_send_un_notification(NSString *title, NSString *body) {
   content.title = title;
   content.body = body;
   content.sound = [UNNotificationSound defaultSound];
-  if (@available(macOS 12.0, *)) {
-    content.interruptionLevel = UNNotificationInterruptionLevelActive;
-    content.relevanceScore = 1.0;
+  if ([content respondsToSelector:@selector(setInterruptionLevel:)]) {
+    [content setInterruptionLevel:UNNotificationInterruptionLevelActive];
+  }
+  if ([content respondsToSelector:@selector(setRelevanceScore:)]) {
+    [content setRelevanceScore:1.0];
   }
 
   NSString *identifier = [[NSUUID UUID] UUIDString];

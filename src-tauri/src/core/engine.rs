@@ -480,6 +480,7 @@ fn sanitize_daily_wake_settings(mut settings: DailyWakeSettings) -> DailyWakeSet
     settings.skip_if_weekly_remaining_below_percent =
         settings.skip_if_weekly_remaining_below_percent.min(100);
     settings.max_primary_delta_percent = settings.max_primary_delta_percent.min(100);
+    settings.last_run_date = None;
     settings.last_run_slots = settings
         .last_run_slots
         .into_iter()

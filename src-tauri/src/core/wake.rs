@@ -1,3 +1,4 @@
+use std::ffi::OsString;
 use std::fs::OpenOptions;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
@@ -176,20 +177,7 @@ pub fn run_wake_prompt(
     let last_message_path = workdir.path().join("last-message.txt");
     let prompt = wake_prompt(message);
     let mut child = Command::new(resolve_codex_binary(codex_binary))
-        .arg("exec")
-        .arg("--ephemeral")
-        .arg("--ignore-user-config")
-        .arg("--ignore-rules")
-        .arg("--json")
-        .arg("-C")
-        .arg(workdir.path())
-        .arg("-s")
-        .arg("read-only")
-        .arg("-a")
-        .arg("never")
-        .arg("-o")
-        .arg(&last_message_path)
-        .arg(prompt)
+        .args(wake_exec_args(workdir.path(), &last_message_path, prompt))
         .envs(build_codex_env(&identity.codex_home))
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -242,9 +230,58 @@ fn join_pipe_reader(reader: Option<std::thread::JoinHandle<String>>) -> ModexRes
     Ok(reader.join().unwrap_or_default())
 }
 
+fn wake_exec_args(workdir: &Path, last_message_path: &Path, prompt: String) -> Vec<OsString> {
+    vec![
+        "exec".into(),
+        "--ephemeral".into(),
+        "--ignore-user-config".into(),
+        "--ignore-rules".into(),
+        "--json".into(),
+        "-C".into(),
+        workdir.as_os_str().to_os_string(),
+        "-s".into(),
+        "read-only".into(),
+        "-o".into(),
+        last_message_path.as_os_str().to_os_string(),
+        prompt.into(),
+    ]
+}
+
 fn wake_prompt(message: &str) -> String {
     format!(
         "Modex daily wake check. Reply exactly OK. Do not inspect files, run commands, use tools, analyze the project, or add explanation. User message: {}",
         message.trim()
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::wake_exec_args;
+
+    #[test]
+    fn wake_exec_args_match_current_codex_cli() {
+        let args = wake_exec_args(
+            Path::new("/tmp/wake-work"),
+            Path::new("/tmp/wake-work/last-message.txt"),
+            "Reply exactly OK".to_string(),
+        )
+        .into_iter()
+        .map(|arg| arg.to_string_lossy().to_string())
+        .collect::<Vec<_>>();
+
+        assert!(args.contains(&"--ephemeral".to_string()));
+        assert!(args.contains(&"--ignore-user-config".to_string()));
+        assert!(args.contains(&"--ignore-rules".to_string()));
+        assert!(args.contains(&"--json".to_string()));
+        assert!(args
+            .windows(2)
+            .any(|pair| pair[0] == "-s" && pair[1] == "read-only"));
+        assert!(args
+            .windows(2)
+            .any(|pair| pair[0] == "-o" && pair[1] == "/tmp/wake-work/last-message.txt"));
+        assert!(!args.contains(&"-a".to_string()));
+        assert!(!args.contains(&"never".to_string()));
+    }
 }

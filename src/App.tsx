@@ -687,7 +687,7 @@ function SettingsView({
     skipIfPrimaryUsedAbovePercent: Number(wakeForm.skipIfPrimaryUsedAbovePercent),
     skipIfWeeklyRemainingBelowPercent: Number(wakeForm.skipIfWeeklyRemainingBelowPercent),
     maxPrimaryDeltaPercent: Number(wakeForm.maxPrimaryDeltaPercent),
-    lastRunDate: appState.dailyWake.lastRunDate ?? null,
+    lastRunDate: null,
     lastRunSlots: appState.dailyWake.lastRunSlots ?? [],
   });
 

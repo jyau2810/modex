@@ -523,7 +523,7 @@ pub fn pending_daily_wake_time(
     today: &str,
     current_time: &str,
 ) -> Option<String> {
-    if !settings.enabled || settings.last_run_date.as_deref() == Some(today) {
+    if !settings.enabled {
         return None;
     }
     let Some(current) = minutes_since_midnight(current_time) else {
@@ -566,7 +566,6 @@ fn run_daily_wake_job(
         let settings = engine.settings().clone();
         if mode == WakeRunMode::Scheduled
             && (!settings.daily_wake.enabled
-                || settings.daily_wake.last_run_date.as_deref() == Some(today)
                 || scheduled_time.is_none_or(|time| {
                     settings
                         .daily_wake
@@ -1222,6 +1221,23 @@ mod tests {
             Some("14:00")
         );
         assert!(!should_start_daily_wake(&settings, "2026-05-18", "08:33"));
+    }
+
+    #[test]
+    fn daily_wake_ignores_legacy_last_run_date_without_slot_marker() {
+        let mut settings = DailyWakeSettings {
+            enabled: true,
+            time: "08:30".to_string(),
+            times: vec!["08:30".to_string()],
+            ..DailyWakeSettings::default()
+        };
+        settings.last_run_date = Some("2026-05-18".to_string());
+        settings.last_run_slots = Vec::new();
+
+        assert_eq!(
+            pending_daily_wake_time(&settings, "2026-05-18", "08:30").as_deref(),
+            Some("08:30")
+        );
     }
 
     #[test]

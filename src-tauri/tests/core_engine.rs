@@ -44,7 +44,13 @@ fn add_identity_persists_new_managed_identity() {
         .unwrap();
 
     assert_eq!(identity.name, "登录中");
-    assert_eq!(identity.codex_home, temp.path().join(".modex/123456789012"));
+    assert_eq!(
+        identity.codex_home,
+        temp.path()
+            .join(".modex/123456789012")
+            .display()
+            .to_string()
+    );
     let saved = load_app_settings_from_path(config.path()).unwrap();
     assert_eq!(saved.identities.len(), 1);
     assert!(saved.has_completed_setup);
