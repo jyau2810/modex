@@ -570,7 +570,8 @@ button:disabled {
 }
 
 .settings-panel label,
-.threshold-field {
+.threshold-field,
+.wake-times-field {
   display: grid;
   gap: 7px;
   color: var(--muted);
@@ -578,11 +579,41 @@ button:disabled {
   font-weight: 800;
 }
 
+.wake-times-header,
 .field-label-row {
   min-width: 0;
   display: flex;
   align-items: center;
   gap: 6px;
+}
+
+.wake-times-header {
+  justify-content: space-between;
+}
+
+.compact-text-button {
+  width: auto;
+  min-height: 30px;
+  gap: 6px;
+  padding: 0 9px;
+  font-size: 12px;
+}
+
+.wake-time-list {
+  display: grid;
+  gap: 8px;
+}
+
+.wake-time-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 36px;
+  gap: 8px;
+}
+
+.wake-time-remove {
+  width: 36px;
+  min-height: 38px;
+  padding: 0;
 }
 
 .field-label-row label {

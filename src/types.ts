@@ -26,11 +26,13 @@ export type Identity = {
 export type DailyWakeSettings = {
   enabled: boolean;
   time: string;
+  times: string[];
   message: string;
   skipIfPrimaryUsedAbovePercent: number;
   skipIfWeeklyRemainingBelowPercent: number;
   maxPrimaryDeltaPercent: number;
   lastRunDate?: string | null;
+  lastRunSlots?: string[];
 };
 
 export type AppLogEntry = {

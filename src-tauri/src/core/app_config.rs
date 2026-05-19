@@ -49,6 +49,8 @@ pub struct DailyWakeSettings {
     pub enabled: bool,
     #[serde(default = "default_daily_wake_time")]
     pub time: String,
+    #[serde(default)]
+    pub times: Vec<String>,
     #[serde(default = "default_daily_wake_message")]
     pub message: String,
     #[serde(default = "default_daily_wake_primary_threshold")]
@@ -59,6 +61,8 @@ pub struct DailyWakeSettings {
     pub max_primary_delta_percent: u8,
     #[serde(default)]
     pub last_run_date: Option<String>,
+    #[serde(default)]
+    pub last_run_slots: Vec<String>,
 }
 
 impl Default for DailyWakeSettings {
@@ -66,11 +70,13 @@ impl Default for DailyWakeSettings {
         Self {
             enabled: false,
             time: default_daily_wake_time(),
+            times: vec![default_daily_wake_time()],
             message: default_daily_wake_message(),
             skip_if_primary_used_above_percent: default_daily_wake_primary_threshold(),
             skip_if_weekly_remaining_below_percent: default_daily_wake_weekly_remaining_threshold(),
             max_primary_delta_percent: default_daily_wake_max_primary_delta(),
             last_run_date: None,
+            last_run_slots: Vec::new(),
         }
     }
 }

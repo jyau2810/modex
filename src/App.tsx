@@ -655,7 +655,7 @@ function SettingsView({
   });
   const [wakeForm, setWakeForm] = useState({
     enabled: appState.dailyWake.enabled,
-    time: appState.dailyWake.time,
+    times: wakeTimesFromSettings(appState.dailyWake),
     message: appState.dailyWake.message,
     skipIfPrimaryUsedAbovePercent: String(appState.dailyWake.skipIfPrimaryUsedAbovePercent),
     skipIfWeeklyRemainingBelowPercent: String(appState.dailyWake.skipIfWeeklyRemainingBelowPercent),
@@ -671,7 +671,7 @@ function SettingsView({
     });
     setWakeForm({
       enabled: appState.dailyWake.enabled,
-      time: appState.dailyWake.time,
+      times: wakeTimesFromSettings(appState.dailyWake),
       message: appState.dailyWake.message,
       skipIfPrimaryUsedAbovePercent: String(appState.dailyWake.skipIfPrimaryUsedAbovePercent),
       skipIfWeeklyRemainingBelowPercent: String(appState.dailyWake.skipIfWeeklyRemainingBelowPercent),
@@ -681,13 +681,31 @@ function SettingsView({
 
   const currentWakeSettings = (): DailyWakeSettings => ({
     enabled: wakeForm.enabled,
-    time: wakeForm.time,
+    time: wakeForm.times[0] ?? "08:30",
+    times: wakeForm.times,
     message: wakeForm.message,
     skipIfPrimaryUsedAbovePercent: Number(wakeForm.skipIfPrimaryUsedAbovePercent),
     skipIfWeeklyRemainingBelowPercent: Number(wakeForm.skipIfWeeklyRemainingBelowPercent),
     maxPrimaryDeltaPercent: Number(wakeForm.maxPrimaryDeltaPercent),
     lastRunDate: appState.dailyWake.lastRunDate ?? null,
+    lastRunSlots: appState.dailyWake.lastRunSlots ?? [],
   });
+
+  const updateWakeTime = (index: number, value: string) => {
+    setWakeForm({
+      ...wakeForm,
+      times: wakeForm.times.map((time, timeIndex) => (timeIndex === index ? value : time)),
+    });
+  };
+
+  const addWakeTime = () => {
+    setWakeForm({ ...wakeForm, times: [...wakeForm.times, "08:30"] });
+  };
+
+  const removeWakeTime = (index: number) => {
+    if (wakeForm.times.length <= 1) return;
+    setWakeForm({ ...wakeForm, times: wakeForm.times.filter((_, timeIndex) => timeIndex !== index) });
+  };
 
   return (
     <section className="settings-panel">
@@ -743,10 +761,36 @@ function SettingsView({
           <span aria-hidden="true" />
         </button>
       </div>
-      <label>
-        <span>唤醒时间</span>
-        <input type="time" value={wakeForm.time} onChange={(event) => setWakeForm({ ...wakeForm, time: event.target.value })} />
-      </label>
+      <div className="wake-times-field">
+        <div className="wake-times-header">
+          <span>唤醒时间</span>
+          <button className="icon-button compact-text-button" type="button" onClick={addWakeTime} disabled={busy}>
+            <Plus size={15} />
+            新增唤醒时间
+          </button>
+        </div>
+        <div className="wake-time-list">
+          {wakeForm.times.map((time, index) => (
+            <div className="wake-time-row" key={index}>
+              <input
+                type="time"
+                aria-label={`唤醒时间 ${index + 1}`}
+                value={time}
+                onChange={(event) => updateWakeTime(index, event.target.value)}
+              />
+              <button
+                className="icon-button wake-time-remove"
+                type="button"
+                aria-label={`删除唤醒时间 ${index + 1}`}
+                onClick={() => removeWakeTime(index)}
+                disabled={busy || wakeForm.times.length <= 1}
+              >
+                <X size={15} />
+              </button>
+            </div>
+          ))}
+        </div>
+      </div>
       <label>
         <span>唤醒消息</span>
         <input value={wakeForm.message} onChange={(event) => setWakeForm({ ...wakeForm, message: event.target.value })} />
@@ -813,6 +857,10 @@ function HelpTip({ label, text }: { label: string; text: string }) {
       <CircleHelp size={13} aria-hidden="true" />
     </button>
   );
+}
+
+function wakeTimesFromSettings(settings: DailyWakeSettings) {
+  return settings.times?.length > 0 ? settings.times : [settings.time || "08:30"];
 }
 
 function EmptyAccounts({ onAdd, busy }: { onAdd: () => void; busy: boolean }) {

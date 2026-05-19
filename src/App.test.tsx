@@ -49,11 +49,13 @@ function state(overrides: Partial<AppSettings> = {}): AppSettings {
     dailyWake: {
       enabled: false,
       time: "08:30",
+      times: ["08:30"],
       message: "Good morning",
       skipIfPrimaryUsedAbovePercent: 3,
       skipIfWeeklyRemainingBelowPercent: 20,
       maxPrimaryDeltaPercent: 3,
       lastRunDate: null,
+      lastRunSlots: [],
     },
     isRefreshing: false,
     identities: [
@@ -915,6 +917,7 @@ describe("App", () => {
           ...state().dailyWake,
           enabled: true,
           time: "09:15",
+          times: ["09:15"],
           skipIfPrimaryUsedAbovePercent: 3,
           skipIfWeeklyRemainingBelowPercent: 20,
         },
@@ -929,8 +932,8 @@ describe("App", () => {
     expect(wakeSwitch).toHaveAttribute("aria-checked", "false");
     await userEvent.click(wakeSwitch);
     expect(wakeSwitch).toHaveAttribute("aria-checked", "true");
-    await userEvent.clear(screen.getByLabelText("唤醒时间"));
-    await userEvent.type(screen.getByLabelText("唤醒时间"), "09:15");
+    await userEvent.clear(screen.getByLabelText("唤醒时间 1"));
+    await userEvent.type(screen.getByLabelText("唤醒时间 1"), "09:15");
     await userEvent.clear(screen.getByLabelText("5小时已用大于"));
     await userEvent.type(screen.getByLabelText("5小时已用大于"), "3");
     await userEvent.clear(screen.getByLabelText("本周剩余小于"));
@@ -941,14 +944,54 @@ describe("App", () => {
       expect(mockApi.updateDailyWakeSettings).toHaveBeenCalledWith({
         enabled: true,
         time: "09:15",
+        times: ["09:15"],
         message: "Good morning",
         skipIfPrimaryUsedAbovePercent: 3,
         skipIfWeeklyRemainingBelowPercent: 20,
         maxPrimaryDeltaPercent: 3,
         lastRunDate: null,
+        lastRunSlots: [],
       }),
     );
     expect(await screen.findByRole("status")).toHaveTextContent("唤醒设置已保存");
+  });
+
+  it("adds and saves multiple daily wake times", async () => {
+    mockApi.getAppState.mockResolvedValue(state());
+    mockApi.updateDailyWakeSettings.mockResolvedValue(
+      state({
+        dailyWake: {
+          ...state().dailyWake,
+          times: ["08:30", "14:00"],
+        },
+      }),
+    );
+
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "Modex", level: 1 });
+    await userEvent.click(screen.getByRole("button", { name: "打开全局设置" }));
+    await userEvent.click(screen.getByRole("button", { name: "新增唤醒时间" }));
+
+    const timeInputs = [screen.getByLabelText("唤醒时间 1"), screen.getByLabelText("唤醒时间 2")];
+    expect(timeInputs).toHaveLength(2);
+    await userEvent.clear(timeInputs[1]);
+    await userEvent.type(timeInputs[1], "14:00");
+    await userEvent.click(screen.getByRole("button", { name: "保存唤醒设置" }));
+
+    await waitFor(() =>
+      expect(mockApi.updateDailyWakeSettings).toHaveBeenCalledWith({
+        enabled: false,
+        time: "08:30",
+        times: ["08:30", "14:00"],
+        message: "Good morning",
+        skipIfPrimaryUsedAbovePercent: 3,
+        skipIfWeeklyRemainingBelowPercent: 20,
+        maxPrimaryDeltaPercent: 3,
+        lastRunDate: null,
+        lastRunSlots: [],
+      }),
+    );
   });
 
   it("runs an immediate daily wake test from settings", async () => {
@@ -978,11 +1021,13 @@ describe("App", () => {
       expect(mockApi.updateDailyWakeSettings).toHaveBeenCalledWith({
         enabled: false,
         time: "08:30",
+        times: ["08:30"],
         message: "Wake test",
         skipIfPrimaryUsedAbovePercent: 3,
         skipIfWeeklyRemainingBelowPercent: 20,
         maxPrimaryDeltaPercent: 3,
         lastRunDate: null,
+        lastRunSlots: [],
       }),
     );
     await waitFor(() => expect(mockApi.runDailyWakeNow).toHaveBeenCalledTimes(1));

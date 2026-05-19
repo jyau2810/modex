@@ -234,7 +234,7 @@ pub async fn run_daily_wake_now(app: AppHandle) -> Result<ActionResult, String> 
         let today = local_date_and_time()
             .map(|(today, _)| today)
             .ok_or_else(|| "无法读取本地日期，测试唤醒未启动。".to_string())?;
-        run_daily_wake_job(&app, &today, WakeRunMode::Manual)?;
+        run_daily_wake_job(&app, &today, WakeRunMode::Manual, None)?;
         Ok(ActionResult {
             ok: true,
             message: "已完成一次测试唤醒，详情见日志。".to_string(),
@@ -499,10 +499,12 @@ pub fn start_daily_wake_scheduler(app: AppHandle) {
                 .map(|engine| engine.settings().daily_wake.clone())
                 .unwrap_or_default()
         };
-        if !should_start_daily_wake(&settings, &today, &current_time) {
+        let Some(scheduled_time) = pending_daily_wake_time(&settings, &today, &current_time) else {
             continue;
-        }
-        if let Err(error) = run_daily_wake_job(&app, &today, WakeRunMode::Scheduled) {
+        };
+        if let Err(error) =
+            run_daily_wake_job(&app, &today, WakeRunMode::Scheduled, Some(&scheduled_time))
+        {
             eprintln!("modex daily wake failed: {error}");
         }
     });
@@ -513,19 +515,42 @@ pub fn should_start_daily_wake(
     today: &str,
     current_time: &str,
 ) -> bool {
-    if !settings.enabled || settings.last_run_date.as_deref() == Some(today) {
-        return false;
-    }
-    let Some(scheduled) = minutes_since_midnight(&settings.time) else {
-        return false;
-    };
-    let Some(current) = minutes_since_midnight(current_time) else {
-        return false;
-    };
-    current >= scheduled && current.saturating_sub(scheduled) <= WAKE_WINDOW_MINUTES
+    pending_daily_wake_time(settings, today, current_time).is_some()
 }
 
-fn run_daily_wake_job(app: &AppHandle, today: &str, mode: WakeRunMode) -> Result<(), String> {
+pub fn pending_daily_wake_time(
+    settings: &DailyWakeSettings,
+    today: &str,
+    current_time: &str,
+) -> Option<String> {
+    if !settings.enabled || settings.last_run_date.as_deref() == Some(today) {
+        return None;
+    }
+    let Some(current) = minutes_since_midnight(current_time) else {
+        return None;
+    };
+    daily_wake_times(settings)
+        .into_iter()
+        .find(|time| {
+            let Some(scheduled) = minutes_since_midnight(time) else {
+                return false;
+            };
+            current >= scheduled
+                && current.saturating_sub(scheduled) <= WAKE_WINDOW_MINUTES
+                && !settings
+                    .last_run_slots
+                    .iter()
+                    .any(|slot| slot == &wake_slot_key(today, time))
+        })
+        .map(ToString::to_string)
+}
+
+fn run_daily_wake_job(
+    app: &AppHandle,
+    today: &str,
+    mode: WakeRunMode,
+    scheduled_time: Option<&str>,
+) -> Result<(), String> {
     let state = app.state::<ModexState>();
     let Some(guard) = state.try_begin_refresh() else {
         if mode == WakeRunMode::Manual {
@@ -541,14 +566,23 @@ fn run_daily_wake_job(app: &AppHandle, today: &str, mode: WakeRunMode) -> Result
         let settings = engine.settings().clone();
         if mode == WakeRunMode::Scheduled
             && (!settings.daily_wake.enabled
-                || settings.daily_wake.last_run_date.as_deref() == Some(today))
+                || settings.daily_wake.last_run_date.as_deref() == Some(today)
+                || scheduled_time.is_none_or(|time| {
+                    settings
+                        .daily_wake
+                        .last_run_slots
+                        .iter()
+                        .any(|slot| slot == &wake_slot_key(today, time))
+                }))
         {
             return Ok(());
         }
         if mode == WakeRunMode::Scheduled {
-            engine
-                .set_daily_wake_last_run_date(today.to_string())
-                .map_err(|error| error.to_string())?;
+            if let Some(time) = scheduled_time {
+                engine
+                    .set_daily_wake_last_run_slot(today.to_string(), time.to_string())
+                    .map_err(|error| error.to_string())?;
+            }
         }
         (
             settings.clone(),
@@ -779,6 +813,18 @@ fn minutes_since_midnight(value: &str) -> Option<u16> {
         return None;
     }
     Some(hour * 60 + minute)
+}
+
+fn daily_wake_times(settings: &DailyWakeSettings) -> Vec<&str> {
+    if settings.times.is_empty() {
+        vec![settings.time.as_str()]
+    } else {
+        settings.times.iter().map(String::as_str).collect()
+    }
+}
+
+fn wake_slot_key(today: &str, time: &str) -> String {
+    format!("{today}#{time}")
 }
 
 fn is_known_non_team_identity(identity: &AppIdentity) -> bool {
@@ -1138,10 +1184,11 @@ mod tests {
     }
 
     #[test]
-    fn daily_wake_starts_only_inside_the_scheduled_window_once_per_day() {
+    fn daily_wake_starts_only_inside_the_scheduled_window_once_per_slot() {
         let mut settings = DailyWakeSettings {
             enabled: true,
             time: "08:30".to_string(),
+            times: vec!["08:30".to_string()],
             ..DailyWakeSettings::default()
         };
 
@@ -1150,9 +1197,31 @@ mod tests {
         assert!(should_start_daily_wake(&settings, "2026-05-18", "08:35"));
         assert!(!should_start_daily_wake(&settings, "2026-05-18", "08:36"));
 
-        settings.last_run_date = Some("2026-05-18".to_string());
+        settings.last_run_slots = vec!["2026-05-18#08:30".to_string()];
         assert!(!should_start_daily_wake(&settings, "2026-05-18", "08:30"));
         assert!(should_start_daily_wake(&settings, "2026-05-19", "08:30"));
+    }
+
+    #[test]
+    fn daily_wake_can_start_multiple_slots_on_the_same_day() {
+        let mut settings = DailyWakeSettings {
+            enabled: true,
+            time: "08:30".to_string(),
+            times: vec!["08:30".to_string(), "14:00".to_string()],
+            ..DailyWakeSettings::default()
+        };
+
+        assert_eq!(
+            pending_daily_wake_time(&settings, "2026-05-18", "08:32").as_deref(),
+            Some("08:30")
+        );
+
+        settings.last_run_slots = vec!["2026-05-18#08:30".to_string()];
+        assert_eq!(
+            pending_daily_wake_time(&settings, "2026-05-18", "14:02").as_deref(),
+            Some("14:00")
+        );
+        assert!(!should_start_daily_wake(&settings, "2026-05-18", "08:33"));
     }
 
     #[test]
@@ -1160,11 +1229,13 @@ mod tests {
         let disabled = DailyWakeSettings {
             enabled: false,
             time: "08:30".to_string(),
+            times: vec!["08:30".to_string()],
             ..DailyWakeSettings::default()
         };
         let invalid = DailyWakeSettings {
             enabled: true,
             time: "25:00".to_string(),
+            times: vec!["25:00".to_string()],
             ..DailyWakeSettings::default()
         };
 

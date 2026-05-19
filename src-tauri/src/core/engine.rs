@@ -91,6 +91,8 @@ impl AppEngine {
     }
 
     pub fn new(settings: AppSettings, config_path: PathBuf) -> Self {
+        let mut settings = settings;
+        settings.daily_wake = sanitize_daily_wake_settings(settings.daily_wake);
         let mut engine = Self {
             settings,
             config_path,
@@ -258,8 +260,16 @@ impl AppEngine {
         Ok(self.app_state())
     }
 
-    pub fn set_daily_wake_last_run_date(&mut self, date: String) -> ModexResult<()> {
-        self.settings.daily_wake.last_run_date = Some(date);
+    pub fn set_daily_wake_last_run_slot(&mut self, date: String, time: String) -> ModexResult<()> {
+        let prefix = format!("{date}#");
+        let slot = format!("{prefix}{time}");
+        self.settings
+            .daily_wake
+            .last_run_slots
+            .retain(|existing| existing.starts_with(&prefix));
+        if !self.settings.daily_wake.last_run_slots.contains(&slot) {
+            self.settings.daily_wake.last_run_slots.push(slot);
+        }
         self.save()
     }
 
@@ -454,7 +464,12 @@ fn clean_optional(value: Option<String>) -> Option<String> {
 }
 
 fn sanitize_daily_wake_settings(mut settings: DailyWakeSettings) -> DailyWakeSettings {
-    settings.time = sanitize_wake_time(&settings.time);
+    settings.times = sanitize_wake_times(&settings.times, &settings.time);
+    settings.time = settings
+        .times
+        .first()
+        .cloned()
+        .unwrap_or_else(|| DailyWakeSettings::default().time);
     settings.message = if settings.message.trim().is_empty() {
         DailyWakeSettings::default().message
     } else {
@@ -465,7 +480,33 @@ fn sanitize_daily_wake_settings(mut settings: DailyWakeSettings) -> DailyWakeSet
     settings.skip_if_weekly_remaining_below_percent =
         settings.skip_if_weekly_remaining_below_percent.min(100);
     settings.max_primary_delta_percent = settings.max_primary_delta_percent.min(100);
+    settings.last_run_slots = settings
+        .last_run_slots
+        .into_iter()
+        .map(|slot| slot.trim().to_string())
+        .filter(|slot| !slot.is_empty())
+        .take(64)
+        .collect();
     settings
+}
+
+fn sanitize_wake_times(values: &[String], legacy_time: &str) -> Vec<String> {
+    let source = if values.is_empty() {
+        vec![legacy_time.to_string()]
+    } else {
+        values.to_vec()
+    };
+    let mut times = Vec::new();
+    for value in source {
+        let sanitized = sanitize_wake_time(&value);
+        if !times.contains(&sanitized) {
+            times.push(sanitized);
+        }
+    }
+    if times.is_empty() {
+        times.push(DailyWakeSettings::default().time);
+    }
+    times
 }
 
 fn sanitize_wake_time(value: &str) -> String {

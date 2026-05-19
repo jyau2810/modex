@@ -79,11 +79,13 @@ fn daily_wake_settings_roundtrip_custom_values() {
   "dailyWake": {
     "enabled": true,
     "time": "09:15",
+    "times": ["09:15", "14:00"],
     "message": "Good morning",
     "skipIfPrimaryUsedAbovePercent": 3,
     "skipIfWeeklyRemainingBelowPercent": 20,
     "maxPrimaryDeltaPercent": 3,
-    "lastRunDate": "2026-05-18"
+    "lastRunDate": "2026-05-18",
+    "lastRunSlots": ["2026-05-18#09:15"]
   },
   "identities": []
 }"#,
@@ -94,6 +96,7 @@ fn daily_wake_settings_roundtrip_custom_values() {
 
     assert!(settings.daily_wake.enabled);
     assert_eq!(settings.daily_wake.time, "09:15");
+    assert_eq!(settings.daily_wake.times, vec!["09:15", "14:00"]);
     assert_eq!(settings.daily_wake.message, "Good morning");
     assert_eq!(settings.daily_wake.skip_if_primary_used_above_percent, 3);
     assert_eq!(
@@ -105,6 +108,7 @@ fn daily_wake_settings_roundtrip_custom_values() {
         settings.daily_wake.last_run_date.as_deref(),
         Some("2026-05-18")
     );
+    assert_eq!(settings.daily_wake.last_run_slots, vec!["2026-05-18#09:15"]);
 
     save_app_settings_to_path(&settings, config.path()).unwrap();
     let saved = load_app_settings_from_path(config.path()).unwrap();
