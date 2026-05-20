@@ -237,6 +237,7 @@ fn wake_exec_args(workdir: &Path, last_message_path: &Path, prompt: String) -> V
         "--ignore-user-config".into(),
         "--ignore-rules".into(),
         "--json".into(),
+        "--skip-git-repo-check".into(),
         "-C".into(),
         workdir.as_os_str().to_os_string(),
         "-s".into(),
@@ -275,6 +276,7 @@ mod tests {
         assert!(args.contains(&"--ignore-user-config".to_string()));
         assert!(args.contains(&"--ignore-rules".to_string()));
         assert!(args.contains(&"--json".to_string()));
+        assert!(args.contains(&"--skip-git-repo-check".to_string()));
         assert!(args
             .windows(2)
             .any(|pair| pair[0] == "-s" && pair[1] == "read-only"));
