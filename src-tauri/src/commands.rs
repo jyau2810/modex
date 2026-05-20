@@ -17,7 +17,8 @@ use crate::core::quota::QuotaSnapshot;
 use crate::core::wake::{
     append_wake_log_entry, default_wake_log_path, primary_delta_exceeds_limit,
     read_recent_wake_log_entries, run_wake_prompt, should_wake_identity, timestamp_millis,
-    weekly_remaining_percent, WakeAuditEntry, WakeDecision, WakeSkipReason, WakeThresholds,
+    wake_quota_evidence, weekly_remaining_percent, WakeAuditEntry, WakeDecision, WakeSkipReason,
+    WakeThresholds,
 };
 use crate::notifications::{
     refresh_notifications, send_notification, send_notifications, switch_failure_notification,
@@ -638,6 +639,7 @@ fn run_daily_wake_job(
         }
 
         let before_primary = identity_view.quota.primary_percent;
+        let before_primary_reset_at = identity_view.quota.primary_reset_at;
         let result = run_wake_prompt(
             &settings.codex_binary,
             &identity,
@@ -657,10 +659,24 @@ fn run_daily_wake_job(
             identity_view_from_engine(&engine, &identity.name)?
         };
         let after_primary = after_view.quota.primary_percent;
+        let after_primary_reset_at = after_view.quota.primary_reset_at;
+        let quota_observed_at_secs = (timestamp_millis() / 1000) as i64;
+        let quota_evidence = wake_quota_evidence(
+            before_primary,
+            before_primary_reset_at,
+            after_primary,
+            after_primary_reset_at,
+            quota_observed_at_secs,
+        );
         let mut detail = serde_json::json!({
             "trigger": mode.as_str(),
             "beforePrimaryPercent": before_primary,
-            "afterPrimaryPercent": after_primary
+            "afterPrimaryPercent": after_primary,
+            "beforePrimaryResetAt": before_primary_reset_at,
+            "afterPrimaryResetAt": after_primary_reset_at,
+            "quotaObservedAt": quota_observed_at_secs,
+            "quotaWindowVerified": quota_evidence.is_verified(),
+            "quotaWindowEvidence": quota_evidence.code()
         });
         let (level, decision, title, reason) = match result {
             Ok(result) => {
@@ -701,6 +717,13 @@ fn run_daily_wake_job(
                         "circuitBreaker",
                         "每日唤醒熔断",
                         Some("primaryDeltaExceeded".to_string()),
+                    )
+                } else if !quota_evidence.is_verified() {
+                    (
+                        "warn",
+                        "unverified",
+                        "每日唤醒待确认",
+                        Some("quotaWindowUnverified".to_string()),
                     )
                 } else {
                     ("info", "woke", "每日唤醒完成", None)
@@ -763,6 +786,7 @@ fn wake_audit_entry(
                 reason.as_deref().unwrap_or("unknown")
             ),
             "woke" => format!("{} 已完成每日唤醒", identity.name),
+            "unverified" => format!("{} 命令成功，但额度窗口未确认", identity.name),
             _ => format!("{} 每日唤醒已停止", identity.name),
         },
         decision: decision.to_string(),

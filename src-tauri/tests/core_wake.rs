@@ -4,7 +4,8 @@ use modex_lib::core::engine::IdentityView;
 use modex_lib::core::quota::QuotaDisplay;
 use modex_lib::core::wake::{
     append_wake_log_entry, primary_delta_exceeds_limit, read_recent_wake_log_entries,
-    should_wake_identity, WakeAuditEntry, WakeDecision, WakeSkipReason, WakeThresholds,
+    should_wake_identity, wake_quota_evidence, WakeAuditEntry, WakeDecision, WakeQuotaEvidence,
+    WakeSkipReason, WakeThresholds,
 };
 
 #[test]
@@ -132,6 +133,52 @@ fn primary_delta_limit_detects_unexpected_consumption() {
     assert!(!primary_delta_exceeds_limit(1, 4, 3));
     assert!(primary_delta_exceeds_limit(1, 5, 3));
     assert!(!primary_delta_exceeds_limit(98, 2, 3));
+}
+
+#[test]
+fn wake_quota_evidence_confirms_visible_primary_usage() {
+    assert_eq!(
+        wake_quota_evidence(
+            1,
+            Some(1_779_000_000),
+            2,
+            Some(1_779_000_030),
+            1_778_982_030
+        ),
+        WakeQuotaEvidence::Verified("primaryUsageIncreased")
+    );
+}
+
+#[test]
+fn wake_quota_evidence_confirms_stable_active_window() {
+    assert_eq!(
+        wake_quota_evidence(
+            1,
+            Some(1_779_000_000),
+            1,
+            Some(1_779_000_000),
+            1_778_982_120
+        ),
+        WakeQuotaEvidence::Verified("primaryWindowStable")
+    );
+}
+
+#[test]
+fn wake_quota_evidence_rejects_ok_reply_without_window_signal() {
+    assert_eq!(
+        wake_quota_evidence(
+            1,
+            Some(1_779_000_000),
+            1,
+            Some(1_779_000_045),
+            1_778_982_045
+        ),
+        WakeQuotaEvidence::Unverified("primaryWindowMovedWithoutUsage")
+    );
+    assert_eq!(
+        wake_quota_evidence(1, Some(1_779_000_000), 1, None, 1_778_982_045),
+        WakeQuotaEvidence::Unverified("missingPrimaryResetAt")
+    );
 }
 
 #[test]

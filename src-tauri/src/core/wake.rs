@@ -68,6 +68,24 @@ pub struct WakePromptResult {
     pub stderr: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum WakeQuotaEvidence {
+    Verified(&'static str),
+    Unverified(&'static str),
+}
+
+impl WakeQuotaEvidence {
+    pub fn is_verified(&self) -> bool {
+        matches!(self, Self::Verified(_))
+    }
+
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::Verified(code) | Self::Unverified(code) => code,
+        }
+    }
+}
+
 impl From<&DailyWakeSettings> for WakeThresholds {
     fn from(settings: &DailyWakeSettings) -> Self {
         Self {
@@ -119,6 +137,34 @@ pub fn primary_delta_exceeds_limit(before: u8, after: u8, max_delta: u8) -> bool
         return false;
     }
     after.saturating_sub(before) > max_delta
+}
+
+pub fn wake_quota_evidence(
+    before_primary_percent: u8,
+    before_primary_reset_at: Option<i64>,
+    after_primary_percent: u8,
+    after_primary_reset_at: Option<i64>,
+    observed_at_secs: i64,
+) -> WakeQuotaEvidence {
+    let Some(after_reset_at) = after_primary_reset_at else {
+        return WakeQuotaEvidence::Unverified("missingPrimaryResetAt");
+    };
+    if after_reset_at <= observed_at_secs {
+        return WakeQuotaEvidence::Unverified("expiredPrimaryResetAt");
+    }
+    if after_primary_percent > before_primary_percent {
+        return WakeQuotaEvidence::Verified("primaryUsageIncreased");
+    }
+    match before_primary_reset_at {
+        None => WakeQuotaEvidence::Verified("primaryWindowAppeared"),
+        Some(before_reset_at) if before_reset_at == after_reset_at => {
+            WakeQuotaEvidence::Verified("primaryWindowStable")
+        }
+        Some(before_reset_at) if before_reset_at < after_reset_at => {
+            WakeQuotaEvidence::Unverified("primaryWindowMovedWithoutUsage")
+        }
+        Some(_) => WakeQuotaEvidence::Unverified("primaryWindowMovedBackward"),
+    }
 }
 
 pub fn append_wake_log_entry(path: &Path, entry: &WakeAuditEntry) -> ModexResult<()> {
