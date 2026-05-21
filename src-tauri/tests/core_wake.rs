@@ -3,9 +3,9 @@ use modex_lib::core::app_config::DailyWakeSettings;
 use modex_lib::core::engine::IdentityView;
 use modex_lib::core::quota::QuotaDisplay;
 use modex_lib::core::wake::{
-    append_wake_log_entry, primary_delta_exceeds_limit, read_recent_wake_log_entries,
-    should_wake_identity, wake_quota_evidence, WakeAuditEntry, WakeDecision, WakeQuotaEvidence,
-    WakeSkipReason, WakeThresholds,
+    append_wake_log_entry, finalize_wake_quota_evidence, primary_delta_exceeds_limit,
+    read_recent_wake_log_entries, should_wake_identity, wake_quota_evidence, WakeAuditEntry,
+    WakeDecision, WakeQuotaEvidence, WakeSkipReason, WakeThresholds,
 };
 
 #[test]
@@ -178,6 +178,17 @@ fn wake_quota_evidence_rejects_ok_reply_without_window_signal() {
     assert_eq!(
         wake_quota_evidence(1, Some(1_779_000_000), 1, None, 1_778_982_045),
         WakeQuotaEvidence::Unverified("missingPrimaryResetAt")
+    );
+}
+
+#[test]
+fn wake_quota_evidence_accepts_settled_backend_update() {
+    let initial = WakeQuotaEvidence::Unverified("primaryWindowMovedWithoutUsage");
+    let settled = WakeQuotaEvidence::Verified("primaryUsageIncreased");
+
+    assert_eq!(
+        finalize_wake_quota_evidence(initial, Some(settled)),
+        WakeQuotaEvidence::Verified("primaryUsageIncreased")
     );
 }
 

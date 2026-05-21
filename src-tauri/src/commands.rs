@@ -15,10 +15,10 @@ use crate::core::engine::{
 };
 use crate::core::quota::QuotaSnapshot;
 use crate::core::wake::{
-    append_wake_log_entry, default_wake_log_path, primary_delta_exceeds_limit,
-    read_recent_wake_log_entries, run_wake_prompt, should_wake_identity, timestamp_millis,
-    wake_quota_evidence, weekly_remaining_percent, WakeAuditEntry, WakeDecision, WakeSkipReason,
-    WakeThresholds,
+    append_wake_log_entry, default_wake_log_path, finalize_wake_quota_evidence,
+    primary_delta_exceeds_limit, read_recent_wake_log_entries, run_wake_prompt,
+    should_wake_identity, timestamp_millis, wake_quota_evidence, weekly_remaining_percent,
+    WakeAuditEntry, WakeDecision, WakeSkipReason, WakeThresholds,
 };
 use crate::notifications::{
     refresh_notifications, send_notification, send_notifications, switch_failure_notification,
@@ -33,6 +33,7 @@ const MIN_POLL_SECONDS: u64 = 10;
 const WAKE_CHECK_SECONDS: u64 = 30;
 const WAKE_WINDOW_MINUTES: u16 = 5;
 const WAKE_TIMEOUT_SECONDS: u64 = 60;
+const WAKE_QUOTA_SETTLE_SECONDS: u64 = 120;
 const RECENT_LOG_LIMIT: usize = 200;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -678,6 +679,7 @@ fn run_daily_wake_job(
             "quotaWindowVerified": quota_evidence.is_verified(),
             "quotaWindowEvidence": quota_evidence.code()
         });
+        let mut audit_view = after_view.clone();
         let (level, decision, title, reason) = match result {
             Ok(result) => {
                 detail["wakeResult"] =
@@ -719,12 +721,55 @@ fn run_daily_wake_job(
                         Some("primaryDeltaExceeded".to_string()),
                     )
                 } else if !quota_evidence.is_verified() {
-                    (
-                        "warn",
-                        "unverified",
-                        "每日唤醒待确认",
-                        Some("quotaWindowUnverified".to_string()),
-                    )
+                    detail["quotaSettleDelaySeconds"] =
+                        serde_json::json!(WAKE_QUOTA_SETTLE_SECONDS);
+                    std::thread::sleep(Duration::from_secs(WAKE_QUOTA_SETTLE_SECONDS));
+                    let settled_refresh = read_quota_snapshot(&settings, &identity);
+                    let settled_view = {
+                        let mut engine = state
+                            .engine
+                            .lock()
+                            .map_err(|_| "Modex state lock poisoned".to_string())?;
+                        match settled_refresh {
+                            Ok(snapshot) => engine.set_snapshot(&identity.name, snapshot),
+                            Err(error) => engine.set_error(&identity.name, error.to_string()),
+                        }
+                        identity_view_from_engine(&engine, &identity.name)?
+                    };
+                    let settled_primary = settled_view.quota.primary_percent;
+                    let settled_primary_reset_at = settled_view.quota.primary_reset_at;
+                    let settled_observed_at_secs = (timestamp_millis() / 1000) as i64;
+                    let settled_evidence = wake_quota_evidence(
+                        before_primary,
+                        before_primary_reset_at,
+                        settled_primary,
+                        settled_primary_reset_at,
+                        settled_observed_at_secs,
+                    );
+                    detail["settledPrimaryPercent"] = serde_json::json!(settled_primary);
+                    detail["settledPrimaryResetAt"] = serde_json::json!(settled_primary_reset_at);
+                    detail["settledQuotaObservedAt"] = serde_json::json!(settled_observed_at_secs);
+                    detail["settledQuotaWindowVerified"] =
+                        serde_json::json!(settled_evidence.is_verified());
+                    detail["settledQuotaWindowEvidence"] =
+                        serde_json::json!(settled_evidence.code());
+                    audit_view = settled_view;
+                    let final_evidence = finalize_wake_quota_evidence(
+                        quota_evidence.clone(),
+                        Some(settled_evidence),
+                    );
+                    detail["quotaWindowVerified"] = serde_json::json!(final_evidence.is_verified());
+                    detail["quotaWindowEvidence"] = serde_json::json!(final_evidence.code());
+                    if final_evidence.is_verified() {
+                        ("info", "woke", "每日唤醒完成", None)
+                    } else {
+                        (
+                            "warn",
+                            "unverified",
+                            "每日唤醒待确认",
+                            Some("quotaWindowUnverified".to_string()),
+                        )
+                    }
                 } else {
                     ("info", "woke", "每日唤醒完成", None)
                 }
@@ -742,7 +787,7 @@ fn run_daily_wake_job(
         };
         let mut entry = wake_audit_entry(
             &run_id,
-            &after_view,
+            &audit_view,
             level,
             decision,
             None,

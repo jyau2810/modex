@@ -167,6 +167,16 @@ pub fn wake_quota_evidence(
     }
 }
 
+pub fn finalize_wake_quota_evidence(
+    initial: WakeQuotaEvidence,
+    settled: Option<WakeQuotaEvidence>,
+) -> WakeQuotaEvidence {
+    if initial.is_verified() {
+        return initial;
+    }
+    settled.unwrap_or(initial)
+}
+
 pub fn append_wake_log_entry(path: &Path, entry: &WakeAuditEntry) -> ModexResult<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
