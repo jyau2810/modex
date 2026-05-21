@@ -10,7 +10,7 @@ use super::app_config::{
 };
 use super::auth::{
     auth_identity_display_name, auth_identity_match_key, auth_plan_type, has_local_auth,
-    plan_label, unique_identity_name,
+    unique_identity_name,
 };
 use super::codex::{
     activate_codex_app, open_codex_app, read_account_display_name, read_quota_snapshot,
@@ -169,7 +169,6 @@ impl AppEngine {
             random_digits,
             run_api_key_login,
             read_account_display_name,
-            read_quota_snapshot,
         )
     }
 
@@ -180,7 +179,6 @@ impl AppEngine {
         mut random_digits: impl FnMut() -> String,
         login: impl FnOnce(&AppSettings, &AppIdentity, &str) -> ModexResult<()>,
         read_account_name: impl FnOnce(&AppSettings, &AppIdentity) -> ModexResult<Option<String>>,
-        read_quota: impl FnOnce(&AppSettings, &AppIdentity) -> ModexResult<QuotaSnapshot>,
     ) -> ModexResult<IdentityView> {
         let api_key = api_key.trim();
         if api_key.is_empty() {
@@ -199,9 +197,7 @@ impl AppEngine {
             .ok()
             .flatten()
             .and_then(clean_name);
-        let quota_result = read_quota(&self.settings, &identity);
-        let base_name =
-            account_name.unwrap_or_else(|| api_key_fallback_name(quota_result.as_ref().ok()));
+        let base_name = account_name.unwrap_or_else(|| "API Key".to_string());
         identity.name = unique_identity_name(
             &base_name,
             self.settings
@@ -211,15 +207,7 @@ impl AppEngine {
         );
         self.settings.identities.push(identity.clone());
         self.settings.has_completed_setup = true;
-        match quota_result {
-            Ok(mut snapshot) => {
-                snapshot.identity = identity.name.clone();
-                self.set_snapshot(&identity.name, snapshot);
-            }
-            Err(error) => {
-                self.set_error(&identity.name, error.to_string());
-            }
-        }
+        self.clear_quota_state(&identity.name);
         self.save()?;
         Ok(self.identity_view(&identity))
     }
@@ -371,8 +359,22 @@ impl AppEngine {
     }
 
     pub fn refresh_identity(&mut self, name: &str) -> ModexResult<IdentityView> {
+        self.refresh_identity_with_reader(name, read_quota_snapshot)
+    }
+
+    pub fn refresh_identity_with_reader(
+        &mut self,
+        name: &str,
+        read_quota: impl FnOnce(&AppSettings, &AppIdentity) -> ModexResult<QuotaSnapshot>,
+    ) -> ModexResult<IdentityView> {
         let identity = self.identity(name)?;
-        match read_quota_snapshot(&self.settings, &identity) {
+        if identity.auth_type == IdentityAuthType::ApiKey {
+            self.clear_quota_state(name);
+            return self
+                .identity(name)
+                .map(|identity| self.identity_view(&identity));
+        }
+        match read_quota(&self.settings, &identity) {
             Ok(snapshot) => {
                 self.set_snapshot(name, snapshot);
             }
@@ -403,6 +405,12 @@ impl AppEngine {
 
     pub fn set_snapshot(&mut self, name: &str, snapshot: QuotaSnapshot) {
         self.snapshots.insert(name.to_string(), snapshot);
+        self.errors.remove(name);
+        self.expired_identity_names.remove(name);
+    }
+
+    pub fn clear_quota_state(&mut self, name: &str) {
+        self.snapshots.remove(name);
         self.errors.remove(name);
         self.expired_identity_names.remove(name);
     }
@@ -543,17 +551,6 @@ fn clean_optional(value: Option<String>) -> Option<String> {
 fn clean_name(value: String) -> Option<String> {
     let value = value.trim().to_string();
     (!value.is_empty()).then_some(value)
-}
-
-fn api_key_fallback_name(snapshot: Option<&QuotaSnapshot>) -> String {
-    let plan = snapshot
-        .and_then(|snapshot| snapshot.plan_type.as_deref())
-        .map(|plan| plan_label(Some(plan)))
-        .filter(|label| label != "计划未知");
-    match plan {
-        Some(plan) => format!("API Key · {plan}"),
-        None => "API Key".to_string(),
-    }
 }
 
 fn sanitize_daily_wake_settings(mut settings: DailyWakeSettings) -> DailyWakeSettings {

@@ -8,7 +8,7 @@ Allow Modex users to create identities that authenticate with an API key and an 
 
 Users can add an identity through either browser login or API key login. Browser login keeps the existing behavior: Modex creates an isolated `CODEX_HOME`, runs `codex login` with the ChatGPT login method, and later detects the account name from `auth.json`.
 
-API key login asks for an API key and an optional base URL. The base URL can be empty for the default provider endpoint. Modex uses the local Codex CLI API-key login path so the key is stored in the identity's isolated `auth.json` with API-key auth mode, not as a ChatGPT browser token. After the key is saved, Modex reads account/quota data through Codex app-server, automatically names the identity when a readable account name is available, and otherwise assigns a unique API-key name. API key identities appear in the account list as usable identities when their isolated `auth.json` exists. The account status labels them as API key identities rather than browser-login accounts.
+API key login asks for an API key and an optional base URL. The base URL can be empty for the default provider endpoint. Modex uses the local Codex CLI API-key login path so the key is stored in the identity's isolated `auth.json` with API-key auth mode, not as a ChatGPT browser token. After the key is saved, Modex reads account data when available, automatically names the identity when a readable account name is available, and otherwise assigns a unique API-key name. API key identities do not query quota data. They appear in the account list as usable identities when their isolated `auth.json` exists. The account status labels them as API key identities rather than browser-login accounts.
 
 ## Data Model
 
@@ -26,7 +26,7 @@ Switching to an API key identity synchronizes that identity's API-key `auth.json
 
 Browser-login identities keep their current quota refresh behavior through Codex app-server and `auth.json`.
 
-API key identities refresh quota immediately after creation and during the existing refresh flows. They are allowed to be current and switchable even when quota data cannot be read. If the current Codex app-server path cannot return quota data for API key authentication, Modex shows quota as unknown or unavailable rather than marking the identity as login expired.
+API key identities skip quota refresh after creation and during the existing refresh flows. They are allowed to be current and switchable when their isolated `auth.json` exists, and Modex shows quota as unknown rather than attempting API-key quota reads or marking the identity as login expired.
 
 ## Error Handling
 
@@ -36,6 +36,6 @@ Backend errors during API key identity creation or switching should flow through
 
 ## Testing
 
-Rust tests cover config migration defaults, API key identity creation, identity view status for API key identities with API-key `auth.json`, and switching behavior that syncs API-key auth while applying optional base URL configuration.
+Rust tests cover config migration defaults, API key identity creation without quota reads, refresh flows that skip API-key quota reads, identity view status for API key identities with API-key `auth.json`, and switching behavior that syncs API-key auth while applying optional base URL configuration.
 
 Frontend tests cover the API key add flow, required field validation through backend errors, hidden API key entry, optional base URL submission, account-list status text, and switching to an API key identity.

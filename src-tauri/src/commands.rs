@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use tauri::{AppHandle, Emitter, Manager, State};
 
-use crate::core::app_config::{AppIdentity, AppSettings, DailyWakeSettings};
+use crate::core::app_config::{AppIdentity, AppSettings, DailyWakeSettings, IdentityAuthType};
 use crate::core::auth::{auth_plan_type, plan_label};
 use crate::core::codex::read_quota_snapshot;
 use crate::core::engine::{
@@ -35,6 +35,11 @@ const WAKE_WINDOW_MINUTES: u16 = 5;
 const WAKE_TIMEOUT_SECONDS: u64 = 60;
 const WAKE_QUOTA_SETTLE_SECONDS: u64 = 120;
 const RECENT_LOG_LIMIT: usize = 200;
+
+enum QuotaRefreshOutcome {
+    SkippedApiKey,
+    Read(crate::core::ModexResult<QuotaSnapshot>),
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum WakeRunMode {
@@ -371,7 +376,11 @@ fn refresh_identity_with_reader(
         (engine.settings().clone(), identity)
     };
 
-    let result = reader(&settings, &identity);
+    let outcome = if identity.auth_type == IdentityAuthType::ApiKey {
+        QuotaRefreshOutcome::SkippedApiKey
+    } else {
+        QuotaRefreshOutcome::Read(reader(&settings, &identity))
+    };
 
     let mut engine = state
         .engine
@@ -380,9 +389,10 @@ fn refresh_identity_with_reader(
     if engine.identity(name).is_err() {
         return Err(format!("未知身份：{name}"));
     }
-    match result {
-        Ok(snapshot) => engine.set_snapshot(name, snapshot),
-        Err(error) => engine.set_error(name, error.to_string()),
+    match outcome {
+        QuotaRefreshOutcome::SkippedApiKey => engine.clear_quota_state(name),
+        QuotaRefreshOutcome::Read(Ok(snapshot)) => engine.set_snapshot(name, snapshot),
+        QuotaRefreshOutcome::Read(Err(error)) => engine.set_error(name, error.to_string()),
     }
     engine
         .sync_current_identity_from_source_auth()
@@ -406,20 +416,26 @@ fn refresh_all_with_reader(
     let mut results = Vec::with_capacity(identities.len());
     for identity in identities {
         let name = identity.name.clone();
-        results.push((name, reader(&settings, &identity)));
+        let outcome = if identity.auth_type == IdentityAuthType::ApiKey {
+            QuotaRefreshOutcome::SkippedApiKey
+        } else {
+            QuotaRefreshOutcome::Read(reader(&settings, &identity))
+        };
+        results.push((name, outcome));
     }
 
     let mut engine = state
         .engine
         .lock()
         .map_err(|_| "Modex state lock poisoned".to_string())?;
-    for (name, result) in results {
+    for (name, outcome) in results {
         if engine.identity(&name).is_err() {
             continue;
         }
-        match result {
-            Ok(snapshot) => engine.set_snapshot(&name, snapshot),
-            Err(error) => engine.set_error(&name, error.to_string()),
+        match outcome {
+            QuotaRefreshOutcome::SkippedApiKey => engine.clear_quota_state(&name),
+            QuotaRefreshOutcome::Read(Ok(snapshot)) => engine.set_snapshot(&name, snapshot),
+            QuotaRefreshOutcome::Read(Err(error)) => engine.set_error(&name, error.to_string()),
         }
     }
     engine
@@ -920,6 +936,9 @@ fn wake_slot_key(today: &str, time: &str) -> String {
 }
 
 fn is_known_non_team_identity(identity: &AppIdentity) -> bool {
+    if identity.auth_type == IdentityAuthType::ApiKey {
+        return true;
+    }
     matches!(
         known_identity_plan_label(identity).as_deref(),
         Some(plan) if plan != "团队版"
@@ -1018,7 +1037,7 @@ mod tests {
     use std::sync::mpsc;
     use std::time::Duration;
 
-    use crate::core::app_config::{AppIdentity, AppSettings, DailyWakeSettings};
+    use crate::core::app_config::{AppIdentity, AppSettings, DailyWakeSettings, IdentityAuthType};
     use crate::core::quota::QuotaSnapshot;
     use crate::core::ModexError;
 
@@ -1130,6 +1149,38 @@ mod tests {
 
         assert_eq!(refreshed[0].quota.status, "available");
         assert_eq!(refreshed[0].quota.plan, "团队版");
+    }
+
+    #[test]
+    fn refresh_all_with_reader_skips_api_key_identities() {
+        let temp = assert_fs::TempDir::new().unwrap();
+        let api_home = temp.path().join(".modex/api");
+        std::fs::create_dir_all(&api_home).unwrap();
+        std::fs::write(
+            api_home.join("auth.json"),
+            r#"{"auth_mode":"apikey","OPENAI_API_KEY":"sk-test"}"#,
+        )
+        .unwrap();
+        let mut settings = AppSettings::default_for_home(temp.path().to_path_buf());
+        settings.identities.push(AppIdentity {
+            name: "Gateway".to_string(),
+            codex_home: api_home,
+            monitor: false,
+            workspace_id: None,
+            auth_type: IdentityAuthType::ApiKey,
+            api_base_url: None,
+        });
+        let state = ModexState::new(AppEngine::new(settings, temp.path().join("config.json")));
+        let guard = state.try_begin_refresh().unwrap();
+
+        let refreshed = refresh_all_with_reader(&state, guard, |_settings, _identity| {
+            panic!("API Key identities should not query quota during refresh all")
+        })
+        .unwrap();
+
+        assert_eq!(refreshed[0].quota.status, "unknown");
+        assert_eq!(refreshed[0].quota.plan, "计划未知");
+        assert!(refreshed[0].logged_in);
     }
 
     #[test]
@@ -1279,6 +1330,39 @@ mod tests {
     }
 
     #[test]
+    fn refresh_identity_with_reader_skips_api_key_identity() {
+        let temp = assert_fs::TempDir::new().unwrap();
+        let api_home = temp.path().join(".modex/api");
+        std::fs::create_dir_all(&api_home).unwrap();
+        std::fs::write(
+            api_home.join("auth.json"),
+            r#"{"auth_mode":"apikey","OPENAI_API_KEY":"sk-test"}"#,
+        )
+        .unwrap();
+        let mut settings = AppSettings::default_for_home(temp.path().to_path_buf());
+        settings.identities.push(AppIdentity {
+            name: "Gateway".to_string(),
+            codex_home: api_home,
+            monitor: false,
+            workspace_id: None,
+            auth_type: IdentityAuthType::ApiKey,
+            api_base_url: None,
+        });
+        let state = ModexState::new(AppEngine::new(settings, temp.path().join("config.json")));
+        let guard = state.try_begin_refresh().unwrap();
+
+        let refreshed =
+            refresh_identity_with_reader(&state, guard, "Gateway", |_settings, _identity| {
+                panic!("API Key identities should not query quota during single refresh")
+            })
+            .unwrap();
+
+        assert_eq!(refreshed.quota.status, "unknown");
+        assert_eq!(refreshed.quota.plan, "计划未知");
+        assert!(refreshed.logged_in);
+    }
+
+    #[test]
     fn refresh_all_if_idle_with_reader_skips_when_refresh_is_already_running() {
         let temp = assert_fs::TempDir::new().unwrap();
         let state = ModexState::new(AppEngine::new(
@@ -1415,9 +1499,18 @@ mod tests {
             auth_type: Default::default(),
             api_base_url: None,
         };
+        let api_key = AppIdentity {
+            name: "Gateway".to_string(),
+            codex_home: PathBuf::from("/tmp/api"),
+            monitor: false,
+            workspace_id: None,
+            auth_type: IdentityAuthType::ApiKey,
+            api_base_url: None,
+        };
 
         assert!(is_known_non_team_identity(&free));
         assert!(is_known_non_team_identity(&enterprise));
+        assert!(is_known_non_team_identity(&api_key));
         assert!(!is_known_non_team_identity(&team));
         assert!(!is_known_non_team_identity(&unknown));
     }

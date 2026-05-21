@@ -245,15 +245,15 @@ describe("App", () => {
       loginExpired: false,
       isCurrent: false,
       quota: {
-        status: "available" as const,
-        plan: "团队版",
-        primaryLabel: "5小时已用 12%",
-        primaryPercent: 12,
-        primaryResetAt: 1770000000,
-        secondaryLabel: "每周已用 34%",
-        secondaryPercent: 34,
-        secondaryResetAt: 1770036000,
-        credits: "额度可用",
+        status: "unknown" as const,
+        plan: "计划未知",
+        primaryLabel: "额度未知",
+        primaryPercent: 0,
+        primaryResetAt: null,
+        secondaryLabel: "额度未知",
+        secondaryPercent: 0,
+        secondaryResetAt: null,
+        credits: "额度未知",
       },
     };
     mockApi.getAppState
@@ -281,8 +281,10 @@ describe("App", () => {
       ),
     );
     const row = await screen.findByRole("article", { name: /project@example.com/ });
-    expect(row).toHaveTextContent("5小时已用");
-    expect(row).toHaveTextContent("12%");
+    expect(row.querySelector(".account-status")).toHaveTextContent("API Key");
+    expect(row).not.toHaveTextContent("5小时已用");
+    expect(row.querySelector(".quota-meter")).not.toBeInTheDocument();
+    expect(mockApi.refreshIdentity).not.toHaveBeenCalled();
     expect(screen.queryByDisplayValue("sk-test-key")).not.toBeInTheDocument();
   });
 
