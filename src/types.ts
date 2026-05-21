@@ -1,4 +1,5 @@
 export type QuotaStatus = "unknown" | "available" | "limited" | "error";
+export type IdentityAuthType = "chatGpt" | "apiKey";
 
 export type QuotaDisplay = {
   status: QuotaStatus;
@@ -17,6 +18,8 @@ export type Identity = {
   name: string;
   codexHome: string;
   workspaceId?: string | null;
+  authType: IdentityAuthType;
+  apiBaseUrl?: string | null;
   loggedIn: boolean;
   loginExpired: boolean;
   isCurrent: boolean;

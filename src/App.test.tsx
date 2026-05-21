@@ -62,6 +62,8 @@ function state(overrides: Partial<AppSettings> = {}): AppSettings {
       {
         name: "team@example.com",
         codexHome: "/Users/alex/.modex/123456789012",
+        authType: "chatGpt",
+        apiBaseUrl: null,
         loggedIn: true,
         loginExpired: false,
         isCurrent: true,
@@ -80,6 +82,8 @@ function state(overrides: Partial<AppSettings> = {}): AppSettings {
       {
         name: "backup@example.com",
         codexHome: "/Users/alex/.modex/999999999999",
+        authType: "chatGpt",
+        apiBaseUrl: null,
         loggedIn: false,
         loginExpired: true,
         isCurrent: false,
@@ -98,6 +102,8 @@ function state(overrides: Partial<AppSettings> = {}): AppSettings {
       {
         name: "unknown@example.com",
         codexHome: "/Users/alex/.modex/555555555555",
+        authType: "chatGpt",
+        apiBaseUrl: null,
         loggedIn: true,
         loginExpired: false,
         isCurrent: false,
@@ -191,6 +197,43 @@ describe("App", () => {
     expect(screen.queryByRole("switch", { name: /监控配额恢复/ })).not.toBeInTheDocument();
   });
 
+  it("labels api key identities without marking them expired", async () => {
+    mockApi.getAppState.mockResolvedValue(
+      state({
+        identities: [
+          {
+            name: "Gateway",
+            codexHome: "/Users/alex/.modex/api",
+            authType: "apiKey",
+            apiBaseUrl: "https://gateway.example/v1",
+            loggedIn: true,
+            loginExpired: false,
+            isCurrent: false,
+            quota: {
+              status: "unknown",
+              plan: "API Key",
+              primaryLabel: "",
+              primaryPercent: 0,
+              primaryResetAt: null,
+              secondaryLabel: "",
+              secondaryPercent: 0,
+              secondaryResetAt: null,
+              credits: "额度未知",
+            },
+          },
+        ],
+        currentIdentityName: null,
+      }),
+    );
+
+    render(<App />);
+
+    const row = await screen.findByRole("article", { name: /Gateway/ });
+    expect(row.querySelector(".account-status")).toHaveTextContent("API Key");
+    expect(row.querySelector(".account-status")).not.toHaveTextContent("登录失效");
+    expect(within(row).getByRole("button", { name: /切换到 Gateway/ })).not.toBeDisabled();
+  });
+
   it("renders the shell without a left sidebar or legacy workspace labels", async () => {
     mockApi.getAppState.mockResolvedValue(state());
 
@@ -252,6 +295,8 @@ describe("App", () => {
           {
             name: "enterprise@example.com",
             codexHome: "/Users/alex/.modex/111111111111",
+            authType: "chatGpt",
+            apiBaseUrl: null,
             loggedIn: true,
             loginExpired: false,
             isCurrent: false,
@@ -412,6 +457,8 @@ describe("App", () => {
     const pendingIdentity = {
       name: "登录中",
       codexHome: "/Users/alex/.modex/333333333333",
+      authType: "chatGpt" as const,
+      apiBaseUrl: null,
       loggedIn: false,
       loginExpired: false,
       isCurrent: false,
@@ -450,6 +497,8 @@ describe("App", () => {
     const importedIdentity = {
       name: "imported@example.com · 团队版",
       codexHome: "/Users/alex/.modex/333333333333",
+      authType: "chatGpt" as const,
+      apiBaseUrl: null,
       loggedIn: true,
       loginExpired: false,
       isCurrent: false,
@@ -536,6 +585,8 @@ describe("App", () => {
     const pendingIdentity = {
       name: "登录中",
       codexHome: "/Users/alex/.modex/333333333333",
+      authType: "chatGpt" as const,
+      apiBaseUrl: null,
       loggedIn: false,
       loginExpired: false,
       isCurrent: false,
@@ -653,6 +704,8 @@ describe("App", () => {
           {
             name: "not-logged-in@example.com",
             codexHome: "/Users/alex/.modex/222222222222",
+            authType: "chatGpt",
+            apiBaseUrl: null,
             loggedIn: false,
             loginExpired: false,
             isCurrent: false,

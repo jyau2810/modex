@@ -12,6 +12,8 @@ import type {
 export const modexApi = {
   getAppState: () => invoke<AppSettings>("get_app_state"),
   addIdentity: () => invoke<Identity>("add_identity"),
+  addApiKeyIdentity: (displayName: string, apiKey: string, baseUrl?: string | null) =>
+    invoke<Identity>("add_api_key_identity", { displayName, apiKey, baseUrl }),
   importCurrentIdentity: () => invoke<ImportIdentityResult>("import_current_identity"),
   deleteIdentity: (name: string) => invoke<ActionResult>("delete_identity", { name }),
   switchIdentity: (name: string) => invoke<ActionResult>("switch_identity", { name }),

@@ -950,6 +950,7 @@ function formatLogTime(timestampMillis: number) {
 }
 
 function statusLabel(identity: Identity) {
+  if (identity.authType === "apiKey" && identity.loggedIn && !identity.loginExpired) return "API Key";
   if (identity.loginExpired || !identity.loggedIn) return "登录失效";
   if (identity.quota.status === "limited") return "配额受限";
   return "可用";
