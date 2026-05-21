@@ -949,12 +949,28 @@ button:disabled {
   color: var(--text);
 }
 
+.add-account-dialog {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  z-index: 31;
+  width: min(420px, calc(100vw - 32px));
+  transform: translate(-50%, -50%);
+  display: grid;
+  gap: 14px;
+  border-radius: 8px;
+  padding: 18px;
+  background: var(--surface);
+  color: var(--text);
+}
+
 .confirm-dialog h2 {
   font-size: 17px;
   letter-spacing: 0;
   line-height: 1.2;
 }
 
+.add-account-dialog h2,
 .api-key-dialog h2 {
   font-size: 17px;
   letter-spacing: 0;
@@ -988,6 +1004,37 @@ button:disabled {
 .api-key-dialog input:focus {
   outline: 2px solid color-mix(in srgb, var(--accent) 36%, transparent);
   outline-offset: 1px;
+}
+
+.add-account-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.account-method-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 44px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-muted);
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 0;
+}
+
+.account-method-button:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--border));
+  color: var(--accent-strong);
+}
+
+.account-method-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.62;
 }
 
 .confirm-actions {

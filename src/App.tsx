@@ -57,6 +57,7 @@ function App() {
   const [unreadLogs, setUnreadLogs] = useState(0);
   const [toast, setToast] = useState<ToastNoticeState | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
+  const [addAccountDialogOpen, setAddAccountDialogOpen] = useState(false);
   const [apiKeyDialogOpen, setApiKeyDialogOpen] = useState(false);
   const autoImportAttempted = useRef(false);
   const inFlightActions = useRef(new Set<string>());
@@ -269,6 +270,16 @@ function App() {
       },
     );
 
+  const startBrowserLogin = () => {
+    setAddAccountDialogOpen(false);
+    addIdentity();
+  };
+
+  const startApiKeyLogin = () => {
+    setAddAccountDialogOpen(false);
+    setApiKeyDialogOpen(true);
+  };
+
   const openIdentityDirectory = (name: string) =>
     runAction("open-dir", () => modexApi.openIdentityDirectory(name), {
       reload: false,
@@ -373,13 +384,9 @@ function App() {
                 <RefreshCw className={isRefreshing ? "spin" : undefined} size={17} />
                 刷新全部账号
               </button>
-              <button className="primary-button" onClick={addIdentity} disabled={busy !== null}>
+              <button className="primary-button" onClick={() => setAddAccountDialogOpen(true)} disabled={busy !== null}>
                 <Plus size={17} />
                 新增账号
-              </button>
-              <button className="icon-button" onClick={() => setApiKeyDialogOpen(true)} disabled={busy !== null}>
-                <KeyRound size={17} />
-                API Key 登录
               </button>
               <LogButton open={logOpen} unread={unreadLogs > 0} onClick={toggleLog} />
               <button
@@ -451,7 +458,7 @@ function App() {
               onDelete={requestDeleteIdentity}
             />
           ) : (
-            <EmptyAccounts onAdd={addIdentity} busy={busy !== null} />
+            <EmptyAccounts onAdd={() => setAddAccountDialogOpen(true)} busy={busy !== null} />
           )}
         </div>
         {!isSettingsView && logOpen ? <LogPanel entries={logEntries} onClose={() => setLogOpen(false)} /> : null}
@@ -461,6 +468,13 @@ function App() {
         accountName={deleteTarget}
         onCancel={() => setDeleteTarget(null)}
         onConfirm={confirmDeleteIdentity}
+      />
+      <AddAccountDialog
+        open={addAccountDialogOpen}
+        busy={busy !== null}
+        onCancel={() => setAddAccountDialogOpen(false)}
+        onBrowserLogin={startBrowserLogin}
+        onApiKeyLogin={startApiKeyLogin}
       />
       <ApiKeyDialog
         open={apiKeyDialogOpen}
@@ -593,6 +607,46 @@ function DeleteConfirmDialog({
             </button>
             <button className="danger-button confirm-danger" onClick={onConfirm}>
               确认删除
+            </button>
+          </div>
+        </Dialog.Content>
+      </Dialog.Portal>
+    </Dialog.Root>
+  );
+}
+
+function AddAccountDialog({
+  open,
+  busy,
+  onCancel,
+  onBrowserLogin,
+  onApiKeyLogin,
+}: {
+  open: boolean;
+  busy: boolean;
+  onCancel: () => void;
+  onBrowserLogin: () => void;
+  onApiKeyLogin: () => void;
+}) {
+  return (
+    <Dialog.Root open={open} onOpenChange={(nextOpen) => (!nextOpen ? onCancel() : undefined)}>
+      <Dialog.Portal>
+        <Dialog.Overlay className="modal-overlay" />
+        <Dialog.Content className="add-account-dialog" aria-describedby={undefined}>
+          <Dialog.Title>新增账号</Dialog.Title>
+          <div className="add-account-options">
+            <button className="account-method-button" onClick={onBrowserLogin} disabled={busy}>
+              <Plus size={18} />
+              浏览器登录
+            </button>
+            <button className="account-method-button" onClick={onApiKeyLogin} disabled={busy}>
+              <KeyRound size={18} />
+              API Key 登录
+            </button>
+          </div>
+          <div className="confirm-actions">
+            <button className="icon-button" onClick={onCancel} disabled={busy}>
+              取消
             </button>
           </div>
         </Dialog.Content>

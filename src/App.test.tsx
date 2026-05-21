@@ -264,7 +264,10 @@ describe("App", () => {
     render(<App />);
 
     await screen.findByRole("heading", { name: "Modex", level: 1 });
-    await userEvent.click(screen.getByRole("button", { name: "API Key 登录" }));
+    expect(screen.queryByRole("button", { name: "API Key 登录" })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: /新增账号/ }));
+    const addDialog = await screen.findByRole("dialog", { name: "新增账号" });
+    await userEvent.click(within(addDialog).getByRole("button", { name: "API Key 登录" }));
     await userEvent.type(screen.getByLabelText("账号名称"), "Gateway");
     await userEvent.type(screen.getByLabelText("API Key"), "sk-test-key");
     await userEvent.type(screen.getByLabelText("Base URL"), "https://gateway.example/v1");
@@ -532,6 +535,7 @@ describe("App", () => {
 
     await screen.findByRole("heading", { name: "Modex", level: 1 });
     await userEvent.click(screen.getByRole("button", { name: /新增账号/ }));
+    await userEvent.click(await screen.findByRole("button", { name: "浏览器登录" }));
 
     await waitFor(() => expect(mockApi.loginIdentity).toHaveBeenCalledWith("登录中"));
     const pendingRow = await screen.findByRole("article", { name: /登录中/ });
@@ -681,6 +685,7 @@ describe("App", () => {
       realSetTimeout(handler, timeout === 2000 ? 0 : timeout, ...args)) as typeof window.setTimeout);
     try {
       await userEvent.click(screen.getByRole("button", { name: /新增账号/ }));
+      await userEvent.click(await screen.findByRole("button", { name: "浏览器登录" }));
 
       await waitFor(() => expect(mockApi.loginIdentity).toHaveBeenCalledWith("登录中"));
       await waitFor(() => expect(mockApi.refreshIdentity).toHaveBeenCalledWith("new@example.com"));
