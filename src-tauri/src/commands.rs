@@ -179,6 +179,7 @@ pub async fn refresh_identity(app: AppHandle, name: String) -> Result<IdentityVi
                 refresh_tray(&app);
                 emit_refresh_finished(&app);
                 let identity = result?;
+                emit_quota_refresh_error_logs(&app, "manual", std::slice::from_ref(&identity));
                 send_refresh_notifications(&app, &before, std::slice::from_ref(&identity));
                 emit_state_updated(&app);
                 identity
@@ -210,6 +211,7 @@ pub async fn refresh_all(app: AppHandle) -> Result<Vec<IdentityView>, String> {
                 refresh_tray(&app);
                 emit_refresh_finished(&app);
                 let identities = result?;
+                emit_quota_refresh_error_logs(&app, "manual", &identities);
                 send_refresh_notifications(&app, &before, &identities);
                 emit_state_updated(&app);
                 identities
@@ -484,6 +486,7 @@ pub fn start_refresh_all_with_events(app: AppHandle, source: &'static str) {
         let _ = refresh_tray(&app);
         let refreshed = match refresh_all_with_guard(&state, guard) {
             Ok(identities) => {
+                emit_quota_refresh_error_logs(&app, source, &identities);
                 send_refresh_notifications(&app, &before, &identities);
                 true
             }
@@ -510,6 +513,7 @@ pub fn start_background_monitor(app: AppHandle) {
             let before = current_identity_views(&state).unwrap_or_default();
             match refresh_all_if_idle(&state) {
                 Ok(Some(identities)) => {
+                    emit_quota_refresh_error_logs(&app, "background", &identities);
                     send_refresh_notifications(&app, &before, &identities);
                     true
                 }
@@ -853,10 +857,13 @@ fn wake_audit_entry(
     decision: &str,
     reason: Option<WakeSkipReason>,
     title: &str,
-    detail: serde_json::Value,
+    mut detail: serde_json::Value,
     settings: &DailyWakeSettings,
 ) -> WakeAuditEntry {
     let reason = reason.map(|reason| format!("{reason:?}"));
+    if let Some(error) = identity.quota.error.as_deref() {
+        detail["quotaError"] = serde_json::json!(error);
+    }
     WakeAuditEntry {
         id: format!("{run_id}:{}:{}", identity.name, timestamp_millis()),
         run_id: run_id.to_string(),
@@ -882,6 +889,42 @@ fn wake_audit_entry(
         thresholds: WakeThresholds::from(settings),
         detail,
     }
+}
+
+fn emit_quota_refresh_error_logs(app: &AppHandle, trigger: &str, identities: &[IdentityView]) {
+    for identity in identities {
+        if let Some(entry) = quota_refresh_error_log_entry(trigger, identity) {
+            emit_and_append_log(app, entry);
+        }
+    }
+}
+
+fn quota_refresh_error_log_entry(trigger: &str, identity: &IdentityView) -> Option<WakeAuditEntry> {
+    let error = identity.quota.error.as_deref()?;
+    if identity.quota.status != "error" {
+        return None;
+    }
+    let timestamp = timestamp_millis();
+    Some(WakeAuditEntry {
+        id: format!("quota-refresh:{trigger}:{}:{timestamp}", identity.name),
+        run_id: format!("quota-refresh:{trigger}:{timestamp}"),
+        timestamp_millis: timestamp,
+        level: "error".to_string(),
+        source: "quotaRefresh".to_string(),
+        identity_name: Some(identity.name.clone()),
+        title: "配额刷新失败".to_string(),
+        message: format!("{} 配额刷新失败：{error}", identity.name),
+        decision: "error".to_string(),
+        reason: Some("quotaRefreshError".to_string()),
+        primary_used_percent: Some(identity.quota.primary_percent),
+        weekly_remaining_percent: Some(weekly_remaining_percent(identity)),
+        thresholds: WakeThresholds::from(&DailyWakeSettings::default()),
+        detail: serde_json::json!({
+            "trigger": trigger,
+            "quotaStatus": identity.quota.status,
+            "error": error,
+        }),
+    })
 }
 
 fn emit_and_append_log(app: &AppHandle, entry: WakeAuditEntry) {
@@ -1273,6 +1316,74 @@ mod tests {
         assert!(refreshed[0].login_expired);
         assert!(!refreshed[0].logged_in);
         assert_eq!(refreshed[0].quota.status, "error");
+    }
+
+    #[test]
+    fn quota_refresh_error_log_entry_captures_identity_and_error() {
+        let temp = assert_fs::TempDir::new().unwrap();
+        let mut settings = AppSettings::default_for_home(temp.path().to_path_buf());
+        settings.identities.push(AppIdentity {
+            name: "Team".to_string(),
+            codex_home: PathBuf::from("/tmp/team"),
+            monitor: false,
+            workspace_id: None,
+            auth_type: Default::default(),
+            api_base_url: None,
+        });
+        let state = ModexState::new(AppEngine::new(settings, temp.path().join("config.json")));
+        let guard = state.try_begin_refresh().unwrap();
+
+        let refreshed = refresh_all_with_reader(&state, guard, |_settings, _identity| {
+            Err(ModexError::from("network unavailable"))
+        })
+        .unwrap();
+
+        let entry = quota_refresh_error_log_entry("manual", &refreshed[0])
+            .expect("quota refresh errors should be converted into app log entries");
+        assert_eq!(entry.level, "error");
+        assert_eq!(entry.source, "quotaRefresh");
+        assert_eq!(entry.identity_name.as_deref(), Some("Team"));
+        assert_eq!(entry.title, "配额刷新失败");
+        assert_eq!(entry.reason.as_deref(), Some("quotaRefreshError"));
+        assert_eq!(entry.detail["trigger"], "manual");
+        assert_eq!(entry.detail["quotaStatus"], "error");
+        assert!(entry.message.contains("Team"));
+        assert!(entry.message.contains("network unavailable"));
+    }
+
+    #[test]
+    fn wake_audit_entry_includes_quota_error_detail() {
+        let temp = assert_fs::TempDir::new().unwrap();
+        let mut settings = AppSettings::default_for_home(temp.path().to_path_buf());
+        settings.identities.push(AppIdentity {
+            name: "Team".to_string(),
+            codex_home: PathBuf::from("/tmp/team"),
+            monitor: false,
+            workspace_id: None,
+            auth_type: Default::default(),
+            api_base_url: None,
+        });
+        let state = ModexState::new(AppEngine::new(settings, temp.path().join("config.json")));
+        let guard = state.try_begin_refresh().unwrap();
+
+        let refreshed = refresh_all_with_reader(&state, guard, |_settings, _identity| {
+            Err(ModexError::from("network unavailable"))
+        })
+        .unwrap();
+
+        let entry = wake_audit_entry(
+            "wake-test",
+            &refreshed[0],
+            "info",
+            "skipped",
+            Some(WakeSkipReason::QuotaUnavailable),
+            "账号未唤醒",
+            serde_json::json!({ "trigger": "manual" }),
+            &DailyWakeSettings::default(),
+        );
+
+        assert_eq!(entry.detail["trigger"], "manual");
+        assert_eq!(entry.detail["quotaError"], "network unavailable");
     }
 
     #[test]
