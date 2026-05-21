@@ -32,7 +32,7 @@ API key identities are allowed to be current and switchable even when quota data
 
 API key creation validates that the display name and API key are non-empty after trimming. Base URL is optional, but if provided it should be trimmed and stored consistently. Duplicate display names should be resolved with the same unique-name behavior used elsewhere.
 
-Backend errors during API key identity creation or switching should flow through the existing action/log notice path. Deleting an API key identity removes its managed identity directory and clears current identity if needed, matching existing delete behavior.
+Backend errors during API key identity creation or switching should flow through the existing action/log notice path. Deleting an API key identity follows the existing delete behavior: it removes the identity from settings and clears the current identity if needed, without adding a new directory deletion flow in this feature.
 
 ## Testing
 
