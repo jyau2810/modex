@@ -10,6 +10,20 @@ pub const CONFIG_VERSION: u8 = 1;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub enum IdentityAuthType {
+    #[serde(rename = "chatGpt")]
+    ChatGpt,
+    ApiKey,
+}
+
+impl Default for IdentityAuthType {
+    fn default() -> Self {
+        Self::ChatGpt
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AppIdentity {
     pub name: String,
     pub codex_home: PathBuf,
@@ -17,6 +31,10 @@ pub struct AppIdentity {
     pub monitor: bool,
     #[serde(default)]
     pub workspace_id: Option<String>,
+    #[serde(default)]
+    pub auth_type: IdentityAuthType,
+    #[serde(default)]
+    pub api_base_url: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

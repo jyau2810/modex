@@ -59,12 +59,16 @@ fn unique_identity_name_adds_suffix_for_collisions() {
             codex_home: PathBuf::from("/tmp/a"),
             monitor: false,
             workspace_id: None,
+            auth_type: Default::default(),
+            api_base_url: None,
         },
         AppIdentity {
             name: "team@example.com 2".to_string(),
             codex_home: PathBuf::from("/tmp/b"),
             monitor: false,
             workspace_id: None,
+            auth_type: Default::default(),
+            api_base_url: None,
         },
     ];
 

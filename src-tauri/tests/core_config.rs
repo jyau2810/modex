@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use assert_fs::prelude::*;
 use modex_lib::core::app_config::{
     load_app_settings_from_path, save_app_settings_to_path, AppIdentity, AppSettings,
-    DailyWakeSettings,
+    DailyWakeSettings, IdentityAuthType,
 };
 
 #[test]
@@ -117,12 +117,61 @@ fn daily_wake_settings_roundtrip_custom_values() {
 }
 
 #[test]
+fn existing_identities_default_to_browser_auth() {
+    let temp = assert_fs::TempDir::new().unwrap();
+    let config = temp.child("config.json");
+    config
+        .write_str(
+            r#"{
+  "version": 1,
+  "codexBinary": "codex",
+  "appName": "Codex",
+  "pollSeconds": 60,
+  "sourceHome": "/Users/alex/.codex",
+  "identities": [
+    {
+      "name": "team@example.com",
+      "codexHome": "/Users/alex/.modex/123456789012"
+    }
+  ]
+}"#,
+        )
+        .unwrap();
+
+    let settings = load_app_settings_from_path(config.path()).unwrap();
+
+    assert_eq!(settings.identities[0].auth_type, IdentityAuthType::ChatGpt);
+    assert_eq!(settings.identities[0].api_base_url, None);
+}
+
+#[test]
+fn api_key_identity_config_roundtrips_auth_type_and_base_url() {
+    let identity = AppIdentity {
+        name: "API".to_string(),
+        codex_home: PathBuf::from("/tmp/api"),
+        monitor: false,
+        workspace_id: None,
+        auth_type: IdentityAuthType::ApiKey,
+        api_base_url: Some("https://gateway.example/v1".to_string()),
+    };
+
+    let value = serde_json::to_value(&identity).unwrap();
+    let decoded: AppIdentity = serde_json::from_value(value.clone()).unwrap();
+
+    assert_eq!(value["authType"], "apiKey");
+    assert_eq!(value["apiBaseUrl"], "https://gateway.example/v1");
+    assert_eq!(decoded, identity);
+}
+
+#[test]
 fn app_identity_serializes_camel_case_paths() {
     let identity = AppIdentity {
         name: "Account".to_string(),
         codex_home: PathBuf::from("/tmp/account"),
         monitor: true,
         workspace_id: None,
+        auth_type: Default::default(),
+        api_base_url: None,
     };
 
     let value = serde_json::to_value(identity).unwrap();

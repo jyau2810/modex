@@ -24,6 +24,8 @@ pub fn default_new_identity(
                 codex_home,
                 monitor: false,
                 workspace_id: None,
+                auth_type: Default::default(),
+                api_base_url: None,
             });
         }
     }

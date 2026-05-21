@@ -418,6 +418,8 @@ mod tests {
             codex_home: Path::new(path).to_path_buf(),
             monitor: true,
             workspace_id: None,
+            auth_type: Default::default(),
+            api_base_url: None,
         }
     }
 }

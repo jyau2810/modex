@@ -121,6 +121,8 @@ fn import_current_identity_reuses_existing_matching_account() {
         codex_home: existing_home,
         monitor: false,
         workspace_id: None,
+        auth_type: Default::default(),
+        api_base_url: None,
     });
     let mut engine = AppEngine::new(settings, config.path().to_path_buf());
 
@@ -166,6 +168,8 @@ fn import_current_identity_marks_new_import_as_current_even_when_accounts_exist(
         codex_home: existing_home,
         monitor: false,
         workspace_id: None,
+        auth_type: Default::default(),
+        api_base_url: None,
     });
     let mut engine = AppEngine::new(settings, config.path().to_path_buf());
 
@@ -240,6 +244,8 @@ fn update_settings_persists_patch_without_dropping_identities() {
         codex_home: PathBuf::from("/tmp/team"),
         monitor: true,
         workspace_id: None,
+        auth_type: Default::default(),
+        api_base_url: None,
     });
     let mut engine = AppEngine::new(settings, config.path().to_path_buf());
 
@@ -270,6 +276,8 @@ fn delete_identity_clears_current_identity_when_deleted() {
         codex_home: PathBuf::from("/tmp/team"),
         monitor: false,
         workspace_id: None,
+        auth_type: Default::default(),
+        api_base_url: None,
     });
     let mut engine = AppEngine::new(settings, config.path().to_path_buf());
 
@@ -290,6 +298,8 @@ fn sync_identity_names_from_auth_persists_browser_login_result() {
         codex_home: codex_home.clone(),
         monitor: false,
         workspace_id: None,
+        auth_type: Default::default(),
+        api_base_url: None,
     });
     let mut engine = AppEngine::new(settings, config.path().to_path_buf());
     std::fs::create_dir_all(&codex_home).unwrap();
@@ -331,12 +341,16 @@ fn refresh_all_updates_identities_even_when_monitor_is_disabled() {
         codex_home: temp.path().join("disabled-monitor"),
         monitor: false,
         workspace_id: None,
+        auth_type: Default::default(),
+        api_base_url: None,
     });
     settings.identities.push(AppIdentity {
         name: "Enabled monitor".to_string(),
         codex_home: temp.path().join("enabled-monitor"),
         monitor: true,
         workspace_id: None,
+        auth_type: Default::default(),
+        api_base_url: None,
     });
     let mut engine = AppEngine::new(settings, config.path().to_path_buf());
 

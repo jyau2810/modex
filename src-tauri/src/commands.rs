@@ -1048,6 +1048,8 @@ mod tests {
             codex_home: PathBuf::from("/tmp/team"),
             monitor: false,
             workspace_id: None,
+            auth_type: Default::default(),
+            api_base_url: None,
         });
         let state = ModexState::new(AppEngine::new(settings, temp.path().join("config.json")));
         let guard = state.try_begin_refresh().unwrap();
@@ -1090,6 +1092,8 @@ mod tests {
             codex_home: PathBuf::from("/tmp/team"),
             monitor: false,
             workspace_id: None,
+            auth_type: Default::default(),
+            api_base_url: None,
         });
         let state = ModexState::new(AppEngine::new(settings, temp.path().join("config.json")));
         let guard = state.try_begin_refresh().unwrap();
@@ -1136,12 +1140,16 @@ mod tests {
             codex_home: team_home,
             monitor: false,
             workspace_id: None,
+            auth_type: Default::default(),
+            api_base_url: None,
         });
         settings.identities.push(AppIdentity {
             name: "backup@example.com · 团队版".to_string(),
             codex_home: backup_home,
             monitor: false,
             workspace_id: None,
+            auth_type: Default::default(),
+            api_base_url: None,
         });
         let state = ModexState::new(AppEngine::new(settings, temp.path().join("config.json")));
         let guard = state.try_begin_refresh().unwrap();
@@ -1180,6 +1188,8 @@ mod tests {
             codex_home: temp.path().join(".modex/expired"),
             monitor: false,
             workspace_id: None,
+            auth_type: Default::default(),
+            api_base_url: None,
         });
         let state = ModexState::new(AppEngine::new(settings, temp.path().join("config.json")));
         let guard = state.try_begin_refresh().unwrap();
@@ -1205,12 +1215,16 @@ mod tests {
             codex_home: PathBuf::from("/tmp/team"),
             monitor: false,
             workspace_id: None,
+            auth_type: Default::default(),
+            api_base_url: None,
         });
         settings.identities.push(AppIdentity {
             name: "Backup".to_string(),
             codex_home: PathBuf::from("/tmp/backup"),
             monitor: false,
             workspace_id: None,
+            auth_type: Default::default(),
+            api_base_url: None,
         });
         let state = ModexState::new(AppEngine::new(settings, temp.path().join("config.json")));
         let guard = state.try_begin_refresh().unwrap();
@@ -1357,24 +1371,32 @@ mod tests {
             codex_home: PathBuf::from("/tmp/free"),
             monitor: false,
             workspace_id: None,
+            auth_type: Default::default(),
+            api_base_url: None,
         };
         let enterprise = AppIdentity {
             name: "enterprise@example.com · 企业版".to_string(),
             codex_home: PathBuf::from("/tmp/enterprise"),
             monitor: false,
             workspace_id: None,
+            auth_type: Default::default(),
+            api_base_url: None,
         };
         let team = AppIdentity {
             name: "team@example.com · 团队版".to_string(),
             codex_home: PathBuf::from("/tmp/team"),
             monitor: false,
             workspace_id: None,
+            auth_type: Default::default(),
+            api_base_url: None,
         };
         let unknown = AppIdentity {
             name: "unknown@example.com".to_string(),
             codex_home: PathBuf::from("/tmp/unknown"),
             monitor: false,
             workspace_id: None,
+            auth_type: Default::default(),
+            api_base_url: None,
         };
 
         assert!(is_known_non_team_identity(&free));
