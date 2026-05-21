@@ -69,7 +69,10 @@ fn account_display_name_uses_chatgpt_email_and_ignores_api_key_accounts() {
         }
     }));
 
-    assert_eq!(chatgpt_name.as_deref(), Some("project@example.com · 团队版"));
+    assert_eq!(
+        chatgpt_name.as_deref(),
+        Some("project@example.com · 团队版")
+    );
     assert_eq!(api_key_name, None);
 }
 

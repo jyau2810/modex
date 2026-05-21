@@ -235,9 +235,49 @@ describe("App", () => {
     expect(within(row).getByRole("button", { name: /切换到 Gateway/ })).not.toBeDisabled();
   });
 
+  it("shows an api key identity as the current account", async () => {
+    mockApi.getAppState.mockResolvedValue(
+      state({
+        currentIdentityName: "Gateway",
+        identities: [
+          {
+            name: "Gateway",
+            codexHome: "/Users/alex/.modex/api",
+            authType: "apiKey",
+            apiBaseUrl: "https://gateway.example/v1",
+            loggedIn: true,
+            loginExpired: false,
+            isCurrent: true,
+            quota: {
+              status: "unknown",
+              plan: "计划未知",
+              primaryLabel: "",
+              primaryPercent: 0,
+              primaryResetAt: null,
+              secondaryLabel: "",
+              secondaryPercent: 0,
+              secondaryResetAt: null,
+              credits: "额度未知",
+            },
+          },
+        ],
+      }),
+    );
+
+    render(<App />);
+
+    const row = await screen.findByRole("article", { name: /Gateway/ });
+    expect(row).toHaveClass("current");
+    expect(within(row).getByRole("button", { name: /切换到 Gateway/ })).toBeDisabled();
+    expect(within(row).getByRole("button", { name: /切换到 Gateway/ })).toHaveAttribute(
+      "title",
+      "这是当前使用的账号",
+    );
+  });
+
   it("adds an api key identity with optional base url", async () => {
     const apiIdentity = {
-      name: "project@example.com · 团队版",
+      name: "Gateway",
       codexHome: "/Users/alex/.modex/api",
       authType: "apiKey" as const,
       apiBaseUrl: "https://gateway.example/v1",
@@ -268,7 +308,7 @@ describe("App", () => {
     await userEvent.click(screen.getByRole("button", { name: /新增账号/ }));
     const addDialog = await screen.findByRole("dialog", { name: "新增账号" });
     await userEvent.click(within(addDialog).getByRole("button", { name: "API Key 登录" }));
-    expect(screen.queryByLabelText("账号名称")).not.toBeInTheDocument();
+    await userEvent.type(screen.getByLabelText("账号名称"), "Gateway");
     await userEvent.type(screen.getByLabelText("API Key"), "sk-test-key");
     await userEvent.type(screen.getByLabelText("Base URL"), "https://gateway.example/v1");
     expect(screen.getByLabelText("API Key")).toHaveAttribute("type", "password");
@@ -276,11 +316,12 @@ describe("App", () => {
 
     await waitFor(() =>
       expect(mockApi.addApiKeyIdentity).toHaveBeenCalledWith(
+        "Gateway",
         "sk-test-key",
         "https://gateway.example/v1",
       ),
     );
-    const row = await screen.findByRole("article", { name: /project@example.com/ });
+    const row = await screen.findByRole("article", { name: /Gateway/ });
     expect(row.querySelector(".account-status")).toHaveTextContent("API Key");
     expect(row).not.toHaveTextContent("5小时已用");
     expect(row.querySelector(".quota-meter")).not.toBeInTheDocument();

@@ -20,6 +20,9 @@ pub fn auth_identity_display_name(codex_home: &Path) -> Option<String> {
 
 pub fn auth_identity_match_key(codex_home: &Path) -> Option<String> {
     let raw = read_auth_json(codex_home)?;
+    if let Some(api_key) = api_key_match_key(&raw) {
+        return Some(api_key);
+    }
     let tokens = raw.get("tokens")?.as_object()?;
     let account_id = tokens
         .get("account_id")
@@ -33,6 +36,23 @@ pub fn auth_identity_match_key(codex_home: &Path) -> Option<String> {
         (Some(account_id), None) => Some(account_id.to_string()),
         (None, Some(subject)) => Some(subject),
         (None, None) => None,
+    }
+}
+
+fn api_key_match_key(raw: &Value) -> Option<String> {
+    let api_key = ["OPENAI_API_KEY", "openai_api_key", "api_key"]
+        .iter()
+        .find_map(|field| raw.get(field).and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?;
+    let auth_mode = raw
+        .get("auth_mode")
+        .and_then(Value::as_str)
+        .map(|value| value.trim().to_ascii_lowercase());
+    if auth_mode.as_deref().is_some_and(|mode| mode == "apikey") || raw.get("tokens").is_none() {
+        Some(format!("api-key:{api_key}"))
+    } else {
+        None
     }
 }
 

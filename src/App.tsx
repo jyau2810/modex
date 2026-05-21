@@ -241,10 +241,10 @@ function App() {
     }
   };
 
-  const addApiKeyIdentity = (apiKey: string, baseUrl: string) =>
+  const addApiKeyIdentity = (accountName: string, apiKey: string, baseUrl: string) =>
     runAction(
       "api-key-login",
-      () => modexApi.addApiKeyIdentity(apiKey, baseUrl.trim() ? baseUrl : null),
+      () => modexApi.addApiKeyIdentity(accountName, apiKey, baseUrl.trim() ? baseUrl : null),
       {
         applyResult: (result) => {
           const identity = result as Identity;
@@ -480,9 +480,9 @@ function App() {
         open={apiKeyDialogOpen}
         busy={busy === "api-key-login"}
         onCancel={() => setApiKeyDialogOpen(false)}
-        onSubmit={(apiKey, baseUrl) => {
+        onSubmit={(accountName, apiKey, baseUrl) => {
           setApiKeyDialogOpen(false);
-          addApiKeyIdentity(apiKey, baseUrl);
+          addApiKeyIdentity(accountName, apiKey, baseUrl);
         }}
       />
       {toast ? <ToastNotice notice={toast} /> : null}
@@ -664,12 +664,12 @@ function ApiKeyDialog({
   open: boolean;
   busy: boolean;
   onCancel: () => void;
-  onSubmit: (apiKey: string, baseUrl: string) => void;
+  onSubmit: (accountName: string, apiKey: string, baseUrl: string) => void;
 }) {
-  const [form, setForm] = useState({ apiKey: "", baseUrl: "" });
+  const [form, setForm] = useState({ accountName: "", apiKey: "", baseUrl: "" });
   useEffect(() => {
     if (!open) {
-      setForm({ apiKey: "", baseUrl: "" });
+      setForm({ accountName: "", apiKey: "", baseUrl: "" });
     }
   }, [open]);
   return (
@@ -678,6 +678,13 @@ function ApiKeyDialog({
         <Dialog.Overlay className="modal-overlay" />
         <Dialog.Content className="api-key-dialog" aria-describedby={undefined}>
           <Dialog.Title>API Key 登录</Dialog.Title>
+          <label>
+            <span>账号名称</span>
+            <input
+              value={form.accountName}
+              onChange={(event) => setForm({ ...form, accountName: event.target.value })}
+            />
+          </label>
           <label>
             <span>API Key</span>
             <input
@@ -696,8 +703,8 @@ function ApiKeyDialog({
             </button>
             <button
               className="primary-button confirm-danger"
-              onClick={() => onSubmit(form.apiKey, form.baseUrl)}
-              disabled={busy}
+              onClick={() => onSubmit(form.accountName, form.apiKey, form.baseUrl)}
+              disabled={busy || !form.accountName.trim() || !form.apiKey.trim()}
             >
               保存 API Key
             </button>

@@ -68,10 +68,10 @@ fn add_api_key_identity_creates_isolated_api_key_account() {
     );
     let mut login_home = None;
     let mut login_key = None;
-    let mut read_account_home = None;
 
     let identity = engine
         .add_api_key_identity_with_operations(
+            " Gateway ",
             " sk-test-key ",
             Some(" https://gateway.example/v1 ".to_string()),
             || "123456789012".to_string(),
@@ -86,14 +86,10 @@ fn add_api_key_identity_creates_isolated_api_key_account() {
                 .unwrap();
                 Ok(())
             },
-            |_settings, identity| {
-                read_account_home = Some(identity.codex_home.clone());
-                Ok(Some("project@example.com · 团队版".to_string()))
-            },
         )
         .unwrap();
 
-    assert_eq!(identity.name, "project@example.com · 团队版");
+    assert_eq!(identity.name, "Gateway");
     assert_eq!(identity.auth_type, IdentityAuthType::ApiKey);
     assert_eq!(
         identity.api_base_url.as_deref(),
@@ -106,18 +102,38 @@ fn add_api_key_identity_creates_isolated_api_key_account() {
     assert_eq!(identity.quota.secondary_percent, 0);
     assert_eq!(login_home.unwrap(), temp.path().join(".modex/123456789012"));
     assert_eq!(login_key.as_deref(), Some("sk-test-key"));
-    assert_eq!(
-        read_account_home.unwrap(),
-        temp.path().join(".modex/123456789012")
-    );
 
     let saved = load_app_settings_from_path(config.path()).unwrap();
-    assert_eq!(saved.identities[0].name, "project@example.com · 团队版");
+    assert_eq!(saved.identities[0].name, "Gateway");
     assert_eq!(saved.identities[0].auth_type, IdentityAuthType::ApiKey);
     assert_eq!(
         saved.identities[0].api_base_url.as_deref(),
         Some("https://gateway.example/v1")
     );
+}
+
+#[test]
+fn add_api_key_identity_rejects_empty_name() {
+    let temp = assert_fs::TempDir::new().unwrap();
+    let config = temp.child("config.json");
+    let mut engine = AppEngine::new(
+        AppSettings::default_for_home(temp.path().to_path_buf()),
+        config.path().to_path_buf(),
+    );
+
+    let empty_name = engine.add_api_key_identity_with_operations(
+        " ",
+        "sk-test-key",
+        None,
+        || "123456789012".to_string(),
+        |_settings, _identity, _api_key| Ok(()),
+    );
+
+    assert!(empty_name
+        .unwrap_err()
+        .to_string()
+        .contains("账号名称不能为空"));
+    assert!(engine.settings().identities.is_empty());
 }
 
 #[test]
@@ -130,11 +146,11 @@ fn add_api_key_identity_rejects_empty_key() {
     );
 
     let empty_key = engine.add_api_key_identity_with_operations(
+        "Gateway",
         " ",
         None,
         || "123456789012".to_string(),
         |_settings, _identity, _api_key| Ok(()),
-        |_settings, _identity| Ok(Some("project@example.com".to_string())),
     );
 
     assert!(empty_key
@@ -142,6 +158,38 @@ fn add_api_key_identity_rejects_empty_key() {
         .to_string()
         .contains("API Key 不能为空"));
     assert!(engine.settings().identities.is_empty());
+}
+
+#[test]
+fn sync_current_identity_from_source_auth_detects_api_key_identity() {
+    let temp = assert_fs::TempDir::new().unwrap();
+    let config = temp.child("config.json");
+    let source_home = temp.path().join("source");
+    let api_home = temp.path().join(".modex/api");
+    std::fs::create_dir_all(&source_home).unwrap();
+    std::fs::create_dir_all(&api_home).unwrap();
+    let auth = r#"{"auth_mode":"apikey","OPENAI_API_KEY":"sk-test"}"#;
+    std::fs::write(source_home.join("auth.json"), auth).unwrap();
+    std::fs::write(api_home.join("auth.json"), auth).unwrap();
+    let mut settings = AppSettings::default_for_home(temp.path().to_path_buf());
+    settings.source_home = source_home;
+    settings.identities.push(AppIdentity {
+        name: "Gateway".to_string(),
+        codex_home: api_home,
+        monitor: false,
+        workspace_id: None,
+        auth_type: IdentityAuthType::ApiKey,
+        api_base_url: Some("https://gateway.example/v1".to_string()),
+    });
+    let mut engine = AppEngine::new(settings, config.path().to_path_buf());
+
+    assert!(engine.sync_current_identity_from_source_auth().unwrap());
+
+    assert_eq!(
+        engine.settings().current_identity_name.as_deref(),
+        Some("Gateway")
+    );
+    assert!(engine.app_state().identities[0].is_current);
 }
 
 #[test]

@@ -6,7 +6,7 @@
 
 **Architecture:** Extend the existing identity model with an auth type and optional base URL while keeping existing browser-login identities as the default. API key creation uses `codex login --with-api-key` against the identity's isolated `CODEX_HOME`; switching syncs that identity's `auth.json` and applies or removes a top-level `openai_base_url` override in the active source `config.toml`.
 
-**Update:** API key identities no longer ask for a manual display name. Modex now automatically derives the identity name from account data when available, falls back to a unique API-key name, and skips quota queries for API-key identities.
+**Update:** API key identities use a manually entered account name, skip quota queries, and keep current-account highlighting by matching the synchronized API-key `auth.json`.
 
 **Tech Stack:** Rust/Tauri backend, React/Vitest frontend, Codex CLI, JSON config, line-preserving TOML key update for one top-level setting.
 
@@ -380,12 +380,12 @@ In `src-tauri/src/core/engine.rs`, import `IdentityAuthType` and `run_api_key_lo
 ```rust
 pub fn add_api_key_identity(
     &mut self,
-    display_name: String,
+    account_name: String,
     api_key: String,
     base_url: Option<String>,
 ) -> ModexResult<IdentityView> {
     self.add_api_key_identity_with_operations(
-        &display_name,
+        &account_name,
         &api_key,
         base_url,
         random_digits,
@@ -395,14 +395,14 @@ pub fn add_api_key_identity(
 
 pub fn add_api_key_identity_with_operations(
     &mut self,
-    display_name: &str,
+    account_name: &str,
     api_key: &str,
     base_url: Option<String>,
     mut random_digits: impl FnMut() -> String,
     login: impl FnOnce(&AppSettings, &AppIdentity, &str) -> ModexResult<()>,
 ) -> ModexResult<IdentityView> {
-    let display_name = display_name.trim();
-    if display_name.is_empty() {
+    let account_name = account_name.trim();
+    if account_name.is_empty() {
         return Err(ModexError::from("账号名称不能为空"));
     }
     let api_key = api_key.trim();
@@ -412,7 +412,7 @@ pub fn add_api_key_identity_with_operations(
     let home = managed_home_root(&self.settings);
     let mut identity = default_new_identity(&home, &mut random_digits)?;
     identity.name = unique_identity_name(
-        display_name,
+        account_name,
         self.settings.identities.iter().map(|identity| identity.name.as_str()),
     );
     identity.auth_type = IdentityAuthType::ApiKey;
@@ -460,14 +460,14 @@ In `src-tauri/src/commands.rs`, add:
 #[tauri::command]
 pub async fn add_api_key_identity(
     app: AppHandle,
-    display_name: String,
+    account_name: String,
     api_key: String,
     base_url: Option<String>,
 ) -> Result<IdentityView, String> {
     run_blocking(move || {
         let state = app.state::<ModexState>();
         let identity = with_engine(state.inner(), |engine| {
-            engine.add_api_key_identity(display_name, api_key, base_url)
+            engine.add_api_key_identity(account_name, api_key, base_url)
         })?;
         refresh_tray(&app);
         Ok(identity)
@@ -757,8 +757,8 @@ apiBaseUrl?: string | null;
 In `src/lib/api.ts`, add:
 
 ```ts
-addApiKeyIdentity: (displayName: string, apiKey: string, baseUrl?: string | null) =>
-  invoke<Identity>("add_api_key_identity", { displayName, apiKey, baseUrl }),
+addApiKeyIdentity: (accountName: string, apiKey: string, baseUrl?: string | null) =>
+  invoke<Identity>("add_api_key_identity", { accountName, apiKey, baseUrl }),
 ```
 
 In `src/App.tsx`, update status helpers:
@@ -878,10 +878,10 @@ const [apiKeyDialogOpen, setApiKeyDialogOpen] = useState(false);
 Add a handler:
 
 ```tsx
-const addApiKeyIdentity = (displayName: string, apiKey: string, baseUrl: string) =>
+const addApiKeyIdentity = (accountName: string, apiKey: string, baseUrl: string) =>
   runAction(
     "api-key-login",
-    () => modexApi.addApiKeyIdentity(displayName, apiKey, baseUrl.trim() ? baseUrl : null),
+    () => modexApi.addApiKeyIdentity(accountName, apiKey, baseUrl.trim() ? baseUrl : null),
     {
       applyResult: (result) => {
         const identity = result as Identity;
@@ -923,9 +923,9 @@ Render:
   open={apiKeyDialogOpen}
   busy={busy === "api-key-login"}
   onCancel={() => setApiKeyDialogOpen(false)}
-  onSubmit={(displayName, apiKey, baseUrl) => {
+  onSubmit={(accountName, apiKey, baseUrl) => {
     setApiKeyDialogOpen(false);
-    addApiKeyIdentity(displayName, apiKey, baseUrl);
+    addApiKeyIdentity(accountName, apiKey, baseUrl);
   }}
 />
 ```
@@ -944,12 +944,12 @@ function ApiKeyDialog({
   open: boolean;
   busy: boolean;
   onCancel: () => void;
-  onSubmit: (displayName: string, apiKey: string, baseUrl: string) => void;
+  onSubmit: (accountName: string, apiKey: string, baseUrl: string) => void;
 }) {
-  const [form, setForm] = useState({ displayName: "", apiKey: "", baseUrl: "" });
+  const [form, setForm] = useState({ accountName: "", apiKey: "", baseUrl: "" });
   useEffect(() => {
     if (!open) {
-      setForm({ displayName: "", apiKey: "", baseUrl: "" });
+      setForm({ accountName: "", apiKey: "", baseUrl: "" });
     }
   }, [open]);
   return (
@@ -960,7 +960,7 @@ function ApiKeyDialog({
           <Dialog.Title>API Key 登录</Dialog.Title>
           <label>
             <span>账号名称</span>
-            <input value={form.displayName} onChange={(event) => setForm({ ...form, displayName: event.target.value })} />
+            <input value={form.accountName} onChange={(event) => setForm({ ...form, accountName: event.target.value })} />
           </label>
           <label>
             <span>API Key</span>
@@ -976,7 +976,7 @@ function ApiKeyDialog({
             </button>
             <button
               className="primary-button confirm-danger"
-              onClick={() => onSubmit(form.displayName, form.apiKey, form.baseUrl)}
+              onClick={() => onSubmit(form.accountName, form.apiKey, form.baseUrl)}
               disabled={busy}
             >
               保存 API Key
