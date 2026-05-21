@@ -29,6 +29,10 @@ tauri-plugin-opener = "2.5.0"
 tempfile = "3.23.0"
 thiserror = "2.0.17"
 
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSStatusItem"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["NSString", "NSUserDefaults"] }
+
 [dev-dependencies]
 assert_fs = "1.1.3"
 predicates = "3.1.3"

@@ -304,13 +304,20 @@ pub fn switch_identity_with_notifications(
 pub fn show_main_window(app: &AppHandle) {
     #[cfg(target_os = "macos")]
     {
-        let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
+        if show_main_window_uses_regular_activation_policy() {
+            let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
+        }
     }
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
         let _ = window.unminimize();
         let _ = window.set_focus();
     }
+}
+
+#[cfg(target_os = "macos")]
+fn show_main_window_uses_regular_activation_policy() -> bool {
+    false
 }
 
 pub fn refresh_all_if_idle(state: &ModexState) -> Result<Option<Vec<IdentityView>>, String> {
@@ -999,6 +1006,12 @@ mod tests {
     use crate::core::ModexError;
 
     use super::*;
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn showing_main_window_preserves_menu_bar_activation_policy() {
+        assert!(!show_main_window_uses_regular_activation_policy());
+    }
 
     fn jwt_with_claims(claims: serde_json::Value) -> String {
         use base64::engine::general_purpose::URL_SAFE_NO_PAD;

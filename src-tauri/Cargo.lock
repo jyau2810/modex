@@ -2157,6 +2157,8 @@ dependencies = [
  "base64 0.22.1",
  "cc",
  "dirs",
+ "objc2-app-kit",
+ "objc2-foundation",
  "predicates",
  "rand",
  "serde",

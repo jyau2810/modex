@@ -1,3 +1,9 @@
+#[cfg(target_os = "macos")]
+use objc2_app_kit::NSStatusItemBehavior;
+#[cfg(target_os = "macos")]
+use objc2_foundation::NSString;
+#[cfg(target_os = "macos")]
+use objc2_foundation::NSUserDefaults;
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{image::Image, AppHandle, Emitter, Manager};
@@ -5,6 +11,12 @@ use tauri::{image::Image, AppHandle, Emitter, Manager};
 use crate::commands::{show_main_window, start_refresh_all_with_events, ModexState};
 
 const TRAY_ID: &str = "modex-main";
+#[cfg(target_os = "macos")]
+const MACOS_TRAY_AUTOSAVE_NAME: &str = "local.modex.statusItem";
+#[cfg(target_os = "macos")]
+const MACOS_TRAY_VISIBLE_PREF_PREFIX: &str = "NSStatusItem VisibleCC ";
+#[cfg(target_os = "macos")]
+const MACOS_TRAY_LEGACY_VISIBLE_PREF_KEY: &str = "NSStatusItem VisibleCC Item-0";
 const TRAY_ICON_BYTES: &[u8] = include_bytes!("../icons/tray-icon.png");
 const MENU_OPEN: &str = "open";
 const MENU_SETTINGS: &str = "settings";
@@ -14,6 +26,8 @@ const IDENTITY_PREFIX: &str = "identity::";
 
 pub fn setup(app: &AppHandle) -> tauri::Result<()> {
     let menu = build_menu(app)?;
+    #[cfg(target_os = "macos")]
+    seed_macos_tray_visibility_preference();
     let mut tray = TrayIconBuilder::with_id(TRAY_ID)
         .menu(&menu)
         .tooltip("Modex")
@@ -24,7 +38,61 @@ pub fn setup(app: &AppHandle) -> tauri::Result<()> {
     {
         tray = tray.icon_as_template(true);
     }
-    tray.build(app)?;
+    let tray = tray.build(app)?;
+    #[cfg(target_os = "macos")]
+    configure_macos_tray_status_item(&tray)?;
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn macos_tray_autosave_name() -> &'static str {
+    MACOS_TRAY_AUTOSAVE_NAME
+}
+
+#[cfg(target_os = "macos")]
+fn macos_tray_visibility_preference_key() -> String {
+    format!(
+        "{MACOS_TRAY_VISIBLE_PREF_PREFIX}{}",
+        macos_tray_autosave_name()
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn seed_macos_tray_visibility_preference() {
+    let defaults = NSUserDefaults::standardUserDefaults();
+    let key = NSString::from_str(&macos_tray_visibility_preference_key());
+    let legacy_key = NSString::from_str(MACOS_TRAY_LEGACY_VISIBLE_PREF_KEY);
+    defaults.removeObjectForKey(&legacy_key);
+    if defaults.objectForKey(&key).is_none() {
+        defaults.setBool_forKey(true, &key);
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn macos_tray_visibility_preference() -> bool {
+    let defaults = NSUserDefaults::standardUserDefaults();
+    let key = NSString::from_str(&macos_tray_visibility_preference_key());
+    defaults.boolForKey(&key)
+}
+
+#[cfg(target_os = "macos")]
+fn macos_tray_allows_user_removal() -> bool {
+    true
+}
+
+#[cfg(target_os = "macos")]
+fn configure_macos_tray_status_item(tray: &tauri::tray::TrayIcon<tauri::Wry>) -> tauri::Result<()> {
+    tray.with_inner_tray_icon(|inner| {
+        if let Some(status_item) = inner.ns_status_item() {
+            let autosave_name = NSString::from_str(macos_tray_autosave_name());
+            status_item.setAutosaveName(Some(&autosave_name));
+            if macos_tray_allows_user_removal() {
+                status_item
+                    .setBehavior(status_item.behavior() | NSStatusItemBehavior::RemovalAllowed);
+            }
+            status_item.setVisible(macos_tray_visibility_preference());
+        }
+    })?;
     Ok(())
 }
 
@@ -182,7 +250,34 @@ fn identity_menu_selectable(available: bool, is_current: bool) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "macos")]
+    use super::macos_tray_allows_user_removal;
+    #[cfg(target_os = "macos")]
+    use super::macos_tray_autosave_name;
+    #[cfg(target_os = "macos")]
+    use super::macos_tray_visibility_preference_key;
     use super::{identity_menu_available, identity_menu_label, identity_menu_selectable};
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_tray_autosave_name_is_unique_to_modex() {
+        assert_eq!(macos_tray_autosave_name(), "local.modex.statusItem");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_tray_visibility_preference_uses_unique_autosave_name() {
+        assert_eq!(
+            macos_tray_visibility_preference_key(),
+            "NSStatusItem VisibleCC local.modex.statusItem"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_tray_status_item_is_user_removable() {
+        assert!(macos_tray_allows_user_removal());
+    }
 
     #[test]
     fn identity_menu_label_adds_emoji_status_dot() {

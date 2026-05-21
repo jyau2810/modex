@@ -6,7 +6,7 @@ mod tray;
 use tauri::Manager;
 
 pub fn run() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
         .invoke_handler(tauri::generate_handler![
@@ -66,8 +66,34 @@ pub fn run() {
             commands::start_daily_wake_scheduler(app.app_handle().clone());
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running Modex");
+        .build(tauri::generate_context!())
+        .expect("error while building Modex");
+
+    app.run(handle_run_event);
+}
+
+fn handle_run_event(app_handle: &tauri::AppHandle, event: tauri::RunEvent) {
+    #[cfg(target_os = "macos")]
+    if let tauri::RunEvent::Reopen {
+        has_visible_windows,
+        ..
+    } = event
+    {
+        if should_restore_main_window_for_reopen(has_visible_windows) {
+            commands::show_main_window(app_handle);
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = app_handle;
+        let _ = event;
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn should_restore_main_window_for_reopen(has_visible_windows: bool) -> bool {
+    !has_visible_windows
 }
 
 fn maybe_send_notification_probe(app: tauri::AppHandle) {
@@ -85,4 +111,19 @@ fn maybe_send_notification_probe(app: tauri::AppHandle) {
             },
         );
     });
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use super::should_restore_main_window_for_reopen;
+
+    #[test]
+    fn macos_reopen_without_visible_windows_restores_main_window() {
+        assert!(should_restore_main_window_for_reopen(false));
+    }
+
+    #[test]
+    fn macos_reopen_with_visible_windows_keeps_existing_window() {
+        assert!(!should_restore_main_window_for_reopen(true));
+    }
 }
