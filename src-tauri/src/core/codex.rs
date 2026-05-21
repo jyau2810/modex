@@ -104,7 +104,54 @@ fn open_codex_app_with_operations(
     #[cfg(not(target_os = "macos"))]
     let _ = quit;
     sync(&settings.source_home, &identity.codex_home)?;
+    apply_identity_runtime_config(settings, identity)?;
     launch(open_codex_app_launch_command(settings))
+}
+
+pub fn prepare_identity_for_launch(
+    settings: &AppSettings,
+    identity: &AppIdentity,
+) -> ModexResult<()> {
+    sync_identity_auth(&settings.source_home, &identity.codex_home)?;
+    apply_identity_runtime_config(settings, identity)
+}
+
+pub fn apply_identity_runtime_config(
+    settings: &AppSettings,
+    identity: &AppIdentity,
+) -> ModexResult<()> {
+    apply_openai_base_url_config(&settings.source_home, identity.api_base_url.as_deref())
+}
+
+pub fn apply_openai_base_url_config(codex_home: &Path, base_url: Option<&str>) -> ModexResult<()> {
+    std::fs::create_dir_all(codex_home)?;
+    let config_path = codex_home.join("config.toml");
+    let existing = std::fs::read_to_string(&config_path).unwrap_or_default();
+    let mut lines = existing
+        .lines()
+        .filter(|line| !is_openai_base_url_line(line))
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    if let Some(base_url) = base_url.map(str::trim).filter(|value| !value.is_empty()) {
+        lines.push(format!(
+            "openai_base_url = \"{}\"",
+            escape_config_value(base_url)
+        ));
+    }
+    let next = if lines.is_empty() {
+        String::new()
+    } else {
+        format!("{}\n", lines.join("\n"))
+    };
+    std::fs::write(config_path, next)?;
+    Ok(())
+}
+
+fn is_openai_base_url_line(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    trimmed == "openai_base_url"
+        || trimmed.starts_with("openai_base_url ")
+        || trimmed.starts_with("openai_base_url=")
 }
 
 #[cfg(target_os = "macos")]

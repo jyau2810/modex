@@ -1,8 +1,8 @@
 use assert_fs::prelude::*;
 use modex_lib::core::app_config::{AppIdentity, AppSettings, IdentityAuthType};
 use modex_lib::core::codex::{
-    api_key_login_invocation, open_codex_app_launch_command, resolve_codex_binary_with,
-    ProgramInvocation,
+    api_key_login_invocation, apply_openai_base_url_config, open_codex_app_launch_command,
+    prepare_identity_for_launch, resolve_codex_binary_with, ProgramInvocation,
 };
 
 #[cfg(target_os = "macos")]
@@ -50,6 +50,64 @@ fn api_key_login_command_reads_key_from_stdin() {
             "CODEX_HOME".to_string(),
             "/tmp/modex-test/.modex/api".to_string()
         )]
+    );
+}
+
+#[test]
+fn apply_openai_base_url_config_sets_or_removes_top_level_key() {
+    let temp = assert_fs::TempDir::new().unwrap();
+    let config = temp.child("config.toml");
+    config
+        .write_str("model = \"gpt-5.2\"\nopenai_base_url = \"https://old.example/v1\"\n")
+        .unwrap();
+
+    apply_openai_base_url_config(temp.path(), Some("https://new.example/v1")).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(config.path()).unwrap(),
+        "model = \"gpt-5.2\"\nopenai_base_url = \"https://new.example/v1\"\n"
+    );
+
+    apply_openai_base_url_config(temp.path(), None).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(config.path()).unwrap(),
+        "model = \"gpt-5.2\"\n"
+    );
+}
+
+#[test]
+fn prepare_identity_for_launch_syncs_api_key_auth_and_applies_base_url() {
+    let temp = assert_fs::TempDir::new().unwrap();
+    let source_home = temp.path().join("source");
+    let api_home = temp.path().join(".modex/api");
+    std::fs::create_dir_all(&source_home).unwrap();
+    std::fs::create_dir_all(&api_home).unwrap();
+    std::fs::write(source_home.join("config.toml"), "model = \"gpt-5.2\"\n").unwrap();
+    std::fs::write(
+        api_home.join("auth.json"),
+        r#"{"auth_mode":"apikey","OPENAI_API_KEY":"sk-test"}"#,
+    )
+    .unwrap();
+
+    let mut settings = AppSettings::default_for_home(temp.path().to_path_buf());
+    settings.source_home = source_home.clone();
+    let identity = AppIdentity {
+        name: "Gateway".to_string(),
+        codex_home: api_home,
+        monitor: false,
+        workspace_id: None,
+        auth_type: IdentityAuthType::ApiKey,
+        api_base_url: Some("https://gateway.example/v1".to_string()),
+    };
+
+    prepare_identity_for_launch(&settings, &identity).unwrap();
+
+    assert_eq!(
+        std::fs::read_to_string(source_home.join("auth.json")).unwrap(),
+        r#"{"auth_mode":"apikey","OPENAI_API_KEY":"sk-test"}"#
+    );
+    assert_eq!(
+        std::fs::read_to_string(source_home.join("config.toml")).unwrap(),
+        "model = \"gpt-5.2\"\nopenai_base_url = \"https://gateway.example/v1\"\n"
     );
 }
 
