@@ -85,7 +85,7 @@ macOS 构建产物会在 `build.sh` 末尾做本机 ad-hoc 签名，以保证系
 ~/.modex/<12 digit id>
 ```
 
-浏览器登录身份切换时会同步对应身份目录下的 Codex `auth.json`。API Key 身份会保存为独立身份，切换时同步 API Key 形式的 `auth.json`，并按需写入或清理该身份的 `openai_base_url` 配置；API Key 身份不进行额度查询，列表中仅显示 API Key 可用状态，并会按当前同步的 API Key 识别当前账号；项目配置和本地会话不会被覆盖。
+浏览器登录身份切换时会同步对应身份目录下的 Codex `auth.json`。API Key 身份会保存为独立身份，切换时同步 API Key 形式的 `auth.json`；如果配置了 Base URL，Modex 会把它规范到 `/v1` 并写入受管理的 Codex provider 配置，同时关闭 WebSocket 以兼容中转服务。API Key 身份不进行额度查询，列表中仅显示 API Key 可用状态，并会按当前同步的 API Key 识别当前账号；项目配置和本地会话不会被覆盖。
 
 ## 测试
 

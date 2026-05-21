@@ -2,13 +2,13 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add independent API key identities with optional Codex `openai_base_url` support.
+**Goal:** Add independent API key identities with optional Codex Base URL support.
 
-**Architecture:** Extend the existing identity model with an auth type and optional base URL while keeping existing browser-login identities as the default. API key creation uses `codex login --with-api-key` against the identity's isolated `CODEX_HOME`; switching syncs that identity's `auth.json` and applies or removes a top-level `openai_base_url` override in the active source `config.toml`.
+**Architecture:** Extend the existing identity model with an auth type and optional base URL while keeping existing browser-login identities as the default. API key creation uses `codex login --with-api-key` against the identity's isolated `CODEX_HOME`; switching syncs that identity's `auth.json` and applies or removes a Modex-managed model provider in the active source `config.toml`, normalizing the Base URL to `/v1` and disabling WebSocket transport for relay compatibility.
 
-**Update:** API key identities use a manually entered account name, skip quota queries, and keep current-account highlighting by matching the synchronized API-key `auth.json`.
+**Update:** API key identities use a manually entered account name, skip quota queries, normalize configured Base URLs to `/v1`, and keep current-account highlighting by matching the synchronized API-key `auth.json`.
 
-**Tech Stack:** Rust/Tauri backend, React/Vitest frontend, Codex CLI, JSON config, line-preserving TOML key update for one top-level setting.
+**Tech Stack:** Rust/Tauri backend, React/Vitest frontend, Codex CLI, JSON config, line-preserving TOML updates for one managed provider.
 
 ---
 
@@ -511,25 +511,27 @@ Add to `src-tauri/tests/core_codex.rs`:
 
 ```rust
 #[test]
-fn apply_openai_base_url_config_sets_or_removes_top_level_key() {
+fn apply_openai_base_url_config_sets_or_removes_managed_provider() {
     use modex_lib::core::codex::apply_openai_base_url_config;
 
     let temp = assert_fs::TempDir::new().unwrap();
     let config = temp.child("config.toml");
     config
-        .write_str("model = \"gpt-5.2\"\nopenai_base_url = \"https://old.example/v1\"\n")
+        .write_str(
+            "model = \"gpt-5.2\"\nopenai_base_url = \"https://old.example/v1\"\n\n[projects.\"/tmp/project\"]\ntrust_level = \"trusted\"\n\n[model_providers.modex-api-key]\nname = \"Old Modex Provider\"\nbase_url = \"https://old.example/v1\"\nwire_api = \"responses\"\nrequires_openai_auth = true\nsupports_websockets = false\n\n[mcp_servers.test]\ncommand = \"test\"\n",
+        )
         .unwrap();
 
-    apply_openai_base_url_config(temp.path(), Some("https://new.example/v1")).unwrap();
+    apply_openai_base_url_config(temp.path(), Some("https://sub2api.flatincbr.com")).unwrap();
     assert_eq!(
         std::fs::read_to_string(config.path()).unwrap(),
-        "model = \"gpt-5.2\"\nopenai_base_url = \"https://new.example/v1\"\n"
+        "model = \"gpt-5.2\"\nmodel_provider = \"modex-api-key\"\n\n[projects.\"/tmp/project\"]\ntrust_level = \"trusted\"\n\n[mcp_servers.test]\ncommand = \"test\"\n\n[model_providers.modex-api-key]\nname = \"Modex API Key\"\nbase_url = \"https://sub2api.flatincbr.com/v1\"\nwire_api = \"responses\"\nrequires_openai_auth = true\nsupports_websockets = false\n"
     );
 
     apply_openai_base_url_config(temp.path(), None).unwrap();
     assert_eq!(
         std::fs::read_to_string(config.path()).unwrap(),
-        "model = \"gpt-5.2\"\n"
+        "model = \"gpt-5.2\"\n\n[projects.\"/tmp/project\"]\ntrust_level = \"trusted\"\n\n[mcp_servers.test]\ncommand = \"test\"\n"
     );
 }
 ```
@@ -575,7 +577,7 @@ fn prepare_identity_for_launch_syncs_api_key_auth_and_applies_base_url() {
     );
     assert_eq!(
         std::fs::read_to_string(source_home.join("config.toml")).unwrap(),
-        "model = \"gpt-5.2\"\nopenai_base_url = \"https://gateway.example/v1\"\n"
+        "model = \"gpt-5.2\"\nmodel_provider = \"modex-api-key\"\n\n[model_providers.modex-api-key]\nname = \"Modex API Key\"\nbase_url = \"https://gateway.example/v1\"\nwire_api = \"responses\"\nrequires_openai_auth = true\nsupports_websockets = false\n"
     );
 }
 ```
@@ -592,60 +594,13 @@ Expected: compile failure for missing `apply_openai_base_url_config` or `prepare
 
 - [ ] **Step 4: Implement config application**
 
-In `src-tauri/src/core/codex.rs`, add:
+In `src-tauri/src/core/codex.rs`, add runtime config helpers that:
 
-```rust
-pub fn apply_openai_base_url_config(
-    codex_home: &Path,
-    base_url: Option<&str>,
-) -> ModexResult<()> {
-    std::fs::create_dir_all(codex_home)?;
-    let config_path = codex_home.join("config.toml");
-    let existing = std::fs::read_to_string(&config_path).unwrap_or_default();
-    let mut lines = existing
-        .lines()
-        .filter(|line| !is_openai_base_url_line(line))
-        .map(ToString::to_string)
-        .collect::<Vec<_>>();
-    if let Some(base_url) = base_url.map(str::trim).filter(|value| !value.is_empty()) {
-        lines.push(format!(
-            "openai_base_url = \"{}\"",
-            escape_config_value(base_url)
-        ));
-    }
-    let next = if lines.is_empty() {
-        String::new()
-    } else {
-        format!("{}\n", lines.join("\n"))
-    };
-    std::fs::write(config_path, next)?;
-    Ok(())
-}
-
-fn is_openai_base_url_line(line: &str) -> bool {
-    let trimmed = line.trim_start();
-    trimmed == "openai_base_url"
-        || trimmed.starts_with("openai_base_url ")
-        || trimmed.starts_with("openai_base_url=")
-}
-
-pub fn apply_identity_runtime_config(
-    settings: &AppSettings,
-    identity: &AppIdentity,
-) -> ModexResult<()> {
-    apply_openai_base_url_config(&settings.source_home, identity.api_base_url.as_deref())
-}
-
-pub fn prepare_identity_for_launch(
-    settings: &AppSettings,
-    identity: &AppIdentity,
-) -> ModexResult<()> {
-    sync_identity_auth(&settings.source_home, &identity.codex_home)?;
-    apply_identity_runtime_config(settings, identity)
-}
-```
-
-Make `escape_config_value` visible inside the module for this helper.
+- remove stale legacy `openai_base_url` lines and stale `[model_providers.modex-api-key]` blocks;
+- normalize non-empty Base URLs to `/v1`;
+- insert top-level `model_provider = "modex-api-key"` before the first TOML table;
+- append a `[model_providers.modex-api-key]` block with `wire_api = "responses"`, `requires_openai_auth = true`, and `supports_websockets = false`;
+- clear the managed `model_provider` selection when switching to an identity without `api_base_url`.
 
 In `open_codex_app_with_operations`, after `sync(&settings.source_home, &identity.codex_home)?;`, call:
 
@@ -653,7 +608,7 @@ In `open_codex_app_with_operations`, after `sync(&settings.source_home, &identit
 apply_identity_runtime_config(settings, identity)?;
 ```
 
-This removes stale `openai_base_url` when switching to a browser identity because browser identities have `api_base_url: None`.
+This removes stale `openai_base_url` and stale Modex-managed provider blocks when switching to a browser identity because browser identities have `api_base_url: None`.
 
 - [ ] **Step 5: Run targeted tests and verify they pass**
 
@@ -1057,7 +1012,7 @@ Update the feature list in `README.md` to include:
 Update the account switching note to explain:
 
 ```markdown
-浏览器登录身份切换时同步 `auth.json`；API Key 身份切换时同步其 API-key `auth.json`，并按需写入 `openai_base_url`。
+浏览器登录身份切换时同步 `auth.json`；API Key 身份切换时同步其 API-key `auth.json`，并按需写入受 Modex 管理的 Codex provider 配置。
 ```
 
 - [ ] **Step 2: Run Rust tests**

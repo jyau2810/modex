@@ -14,6 +14,8 @@ use super::sync::sync_identity_auth;
 use super::{ModexError, ModexResult};
 
 const DEFAULT_CODEX_APP_CLI: &str = "/Applications/Codex.app/Contents/Resources/codex";
+const MODEX_API_KEY_PROVIDER_ID: &str = "modex-api-key";
+const MODEX_API_KEY_PROVIDER_NAME: &str = "Modex API Key";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProgramInvocation {
@@ -128,17 +130,29 @@ pub fn apply_openai_base_url_config(codex_home: &Path, base_url: Option<&str>) -
     std::fs::create_dir_all(codex_home)?;
     let config_path = codex_home.join("config.toml");
     let existing = std::fs::read_to_string(&config_path).unwrap_or_default();
-    let mut lines = existing
-        .lines()
-        .filter(|line| !is_openai_base_url_line(line))
-        .map(ToString::to_string)
-        .collect::<Vec<_>>();
-    if let Some(base_url) = base_url.map(str::trim).filter(|value| !value.is_empty()) {
-        lines.push(format!(
-            "openai_base_url = \"{}\"",
-            escape_config_value(base_url)
-        ));
+    let base_url = base_url
+        .map(normalize_openai_api_base_url)
+        .filter(|value| !value.is_empty());
+    let mut lines = strip_managed_api_key_provider_config(&existing, base_url.is_some());
+    if let Some(base_url) = base_url {
+        let insert_at = top_level_insert_index(&lines);
+        lines.insert(
+            insert_at,
+            format!("model_provider = \"{MODEX_API_KEY_PROVIDER_ID}\""),
+        );
+        if !lines.is_empty() && !lines.last().is_some_and(|line| line.trim().is_empty()) {
+            lines.push(String::new());
+        }
+        lines.extend([
+            format!("[model_providers.{MODEX_API_KEY_PROVIDER_ID}]"),
+            format!("name = \"{MODEX_API_KEY_PROVIDER_NAME}\""),
+            format!("base_url = \"{}\"", escape_config_value(&base_url)),
+            "wire_api = \"responses\"".to_string(),
+            "requires_openai_auth = true".to_string(),
+            "supports_websockets = false".to_string(),
+        ]);
     }
+    let lines = tidy_config_lines(lines);
     let next = if lines.is_empty() {
         String::new()
     } else {
@@ -148,11 +162,114 @@ pub fn apply_openai_base_url_config(codex_home: &Path, base_url: Option<&str>) -
     Ok(())
 }
 
+fn strip_managed_api_key_provider_config(
+    existing: &str,
+    remove_any_top_level_model_provider: bool,
+) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut before_first_table = true;
+    let mut skipping_managed_provider = false;
+    for line in existing.lines() {
+        let trimmed = line.trim();
+        if is_table_header(trimmed) {
+            before_first_table = false;
+            if is_managed_provider_table(trimmed) {
+                skipping_managed_provider = true;
+                continue;
+            }
+            skipping_managed_provider = false;
+        } else if skipping_managed_provider {
+            continue;
+        }
+        if skipping_managed_provider || is_openai_base_url_line(line) {
+            continue;
+        }
+        if before_first_table
+            && is_model_provider_line(line)
+            && (remove_any_top_level_model_provider || is_managed_model_provider_assignment(line))
+        {
+            continue;
+        }
+        lines.push(line.to_string());
+    }
+    tidy_config_lines(lines)
+}
+
+fn normalize_openai_api_base_url(base_url: &str) -> String {
+    let base_url = base_url.trim().trim_end_matches('/');
+    if base_url.is_empty() {
+        return String::new();
+    }
+    if base_url.ends_with("/v1") {
+        base_url.to_string()
+    } else {
+        format!("{base_url}/v1")
+    }
+}
+
+fn top_level_insert_index(lines: &[String]) -> usize {
+    let mut index = lines
+        .iter()
+        .position(|line| is_table_header(line.trim()))
+        .unwrap_or(lines.len());
+    while index > 0 && lines[index - 1].trim().is_empty() {
+        index -= 1;
+    }
+    index
+}
+
+fn tidy_config_lines(lines: Vec<String>) -> Vec<String> {
+    let mut tidied = Vec::with_capacity(lines.len());
+    for line in lines {
+        if line.trim().is_empty()
+            && tidied
+                .last()
+                .is_some_and(|last: &String| last.trim().is_empty())
+        {
+            continue;
+        }
+        tidied.push(line);
+    }
+    while tidied.first().is_some_and(|line| line.trim().is_empty()) {
+        tidied.remove(0);
+    }
+    while tidied.last().is_some_and(|line| line.trim().is_empty()) {
+        tidied.pop();
+    }
+    tidied
+}
+
+fn is_table_header(trimmed: &str) -> bool {
+    trimmed.starts_with('[') && trimmed.ends_with(']')
+}
+
+fn is_managed_provider_table(trimmed: &str) -> bool {
+    matches!(
+        trimmed,
+        "[model_providers.modex-api-key]" | "[model_providers.\"modex-api-key\"]"
+    )
+}
+
+fn is_model_provider_line(line: &str) -> bool {
+    is_toml_key_line(line, "model_provider")
+}
+
+fn is_managed_model_provider_assignment(line: &str) -> bool {
+    line.split_once('=').is_some_and(|(key, value)| {
+        key.trim() == "model_provider"
+            && value.trim().trim_matches('"') == MODEX_API_KEY_PROVIDER_ID
+    })
+}
+
 fn is_openai_base_url_line(line: &str) -> bool {
+    is_toml_key_line(line, "openai_base_url")
+}
+
+fn is_toml_key_line(line: &str, key: &str) -> bool {
     let trimmed = line.trim_start();
-    trimmed == "openai_base_url"
-        || trimmed.starts_with("openai_base_url ")
-        || trimmed.starts_with("openai_base_url=")
+    trimmed == key
+        || trimmed.starts_with(&format!("{key} "))
+        || trimmed.starts_with(&format!("{key}="))
 }
 
 #[cfg(target_os = "macos")]
