@@ -5,6 +5,7 @@ import {
   CircleHelp,
   FileText,
   FolderOpen,
+  KeyRound,
   Loader2,
   Plus,
   Power,
@@ -56,6 +57,7 @@ function App() {
   const [unreadLogs, setUnreadLogs] = useState(0);
   const [toast, setToast] = useState<ToastNoticeState | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
+  const [apiKeyDialogOpen, setApiKeyDialogOpen] = useState(false);
   const autoImportAttempted = useRef(false);
   const inFlightActions = useRef(new Set<string>());
   const toastTimer = useRef<number | null>(null);
@@ -238,6 +240,35 @@ function App() {
     }
   };
 
+  const addApiKeyIdentity = (displayName: string, apiKey: string, baseUrl: string) =>
+    runAction(
+      "api-key-login",
+      () => modexApi.addApiKeyIdentity(displayName, apiKey, baseUrl.trim() ? baseUrl : null),
+      {
+        applyResult: (result) => {
+          const identity = result as Identity;
+          setAppState((current) =>
+            current
+              ? {
+                  ...current,
+                  hasCompletedSetup: true,
+                  identities: [
+                    ...current.identities.filter((item) => item.name !== identity.name),
+                    identity,
+                  ],
+                }
+              : current,
+          );
+        },
+        failureNoticeTitle: "API Key 登录失败",
+        reload: true,
+        successNotice: {
+          title: "API Key 账号已添加",
+          message: "已保存为独立身份。",
+        },
+      },
+    );
+
   const openIdentityDirectory = (name: string) =>
     runAction("open-dir", () => modexApi.openIdentityDirectory(name), {
       reload: false,
@@ -346,6 +377,10 @@ function App() {
                 <Plus size={17} />
                 新增账号
               </button>
+              <button className="icon-button" onClick={() => setApiKeyDialogOpen(true)} disabled={busy !== null}>
+                <KeyRound size={17} />
+                API Key 登录
+              </button>
               <LogButton open={logOpen} unread={unreadLogs > 0} onClick={toggleLog} />
               <button
                 className="icon-button settings-toggle"
@@ -426,6 +461,15 @@ function App() {
         accountName={deleteTarget}
         onCancel={() => setDeleteTarget(null)}
         onConfirm={confirmDeleteIdentity}
+      />
+      <ApiKeyDialog
+        open={apiKeyDialogOpen}
+        busy={busy === "api-key-login"}
+        onCancel={() => setApiKeyDialogOpen(false)}
+        onSubmit={(displayName, apiKey, baseUrl) => {
+          setApiKeyDialogOpen(false);
+          addApiKeyIdentity(displayName, apiKey, baseUrl);
+        }}
       />
       {toast ? <ToastNotice notice={toast} /> : null}
     </main>
@@ -549,6 +593,63 @@ function DeleteConfirmDialog({
             </button>
             <button className="danger-button confirm-danger" onClick={onConfirm}>
               确认删除
+            </button>
+          </div>
+        </Dialog.Content>
+      </Dialog.Portal>
+    </Dialog.Root>
+  );
+}
+
+function ApiKeyDialog({
+  open,
+  busy,
+  onCancel,
+  onSubmit,
+}: {
+  open: boolean;
+  busy: boolean;
+  onCancel: () => void;
+  onSubmit: (displayName: string, apiKey: string, baseUrl: string) => void;
+}) {
+  const [form, setForm] = useState({ displayName: "", apiKey: "", baseUrl: "" });
+  useEffect(() => {
+    if (!open) {
+      setForm({ displayName: "", apiKey: "", baseUrl: "" });
+    }
+  }, [open]);
+  return (
+    <Dialog.Root open={open} onOpenChange={(nextOpen) => (!nextOpen ? onCancel() : undefined)}>
+      <Dialog.Portal>
+        <Dialog.Overlay className="modal-overlay" />
+        <Dialog.Content className="api-key-dialog" aria-describedby={undefined}>
+          <Dialog.Title>API Key 登录</Dialog.Title>
+          <label>
+            <span>账号名称</span>
+            <input value={form.displayName} onChange={(event) => setForm({ ...form, displayName: event.target.value })} />
+          </label>
+          <label>
+            <span>API Key</span>
+            <input
+              type="password"
+              value={form.apiKey}
+              onChange={(event) => setForm({ ...form, apiKey: event.target.value })}
+            />
+          </label>
+          <label>
+            <span>Base URL</span>
+            <input value={form.baseUrl} onChange={(event) => setForm({ ...form, baseUrl: event.target.value })} />
+          </label>
+          <div className="confirm-actions">
+            <button className="icon-button" onClick={onCancel} disabled={busy}>
+              取消
+            </button>
+            <button
+              className="primary-button confirm-danger"
+              onClick={() => onSubmit(form.displayName, form.apiKey, form.baseUrl)}
+              disabled={busy}
+            >
+              保存 API Key
             </button>
           </div>
         </Dialog.Content>

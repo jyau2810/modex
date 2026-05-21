@@ -934,7 +934,28 @@ button:disabled {
   color: var(--text);
 }
 
+.api-key-dialog {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  z-index: 31;
+  width: min(430px, calc(100vw - 32px));
+  transform: translate(-50%, -50%);
+  display: grid;
+  gap: 14px;
+  border-radius: 8px;
+  padding: 18px;
+  background: var(--surface);
+  color: var(--text);
+}
+
 .confirm-dialog h2 {
+  font-size: 17px;
+  letter-spacing: 0;
+  line-height: 1.2;
+}
+
+.api-key-dialog h2 {
   font-size: 17px;
   letter-spacing: 0;
   line-height: 1.2;
@@ -944,6 +965,29 @@ button:disabled {
   color: var(--muted);
   font-size: 13px;
   line-height: 1.5;
+}
+
+.api-key-dialog label {
+  display: grid;
+  gap: 7px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.api-key-dialog input {
+  width: 100%;
+  min-height: 38px;
+  border: 0;
+  border-radius: 8px;
+  padding: 0 10px;
+  background: var(--surface-muted);
+  color: var(--text);
+}
+
+.api-key-dialog input:focus {
+  outline: 2px solid color-mix(in srgb, var(--accent) 36%, transparent);
+  outline-offset: 1px;
 }
 
 .confirm-actions {

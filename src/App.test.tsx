@@ -9,6 +9,7 @@ import type { AppSettings } from "./types";
 const mockApi = vi.hoisted(() => ({
   getAppState: vi.fn(),
   addIdentity: vi.fn(),
+  addApiKeyIdentity: vi.fn(),
   importCurrentIdentity: vi.fn(),
   deleteIdentity: vi.fn(),
   switchIdentity: vi.fn(),
@@ -232,6 +233,53 @@ describe("App", () => {
     expect(row.querySelector(".account-status")).toHaveTextContent("API Key");
     expect(row.querySelector(".account-status")).not.toHaveTextContent("登录失效");
     expect(within(row).getByRole("button", { name: /切换到 Gateway/ })).not.toBeDisabled();
+  });
+
+  it("adds an api key identity with optional base url", async () => {
+    const apiIdentity = {
+      name: "Gateway",
+      codexHome: "/Users/alex/.modex/api",
+      authType: "apiKey" as const,
+      apiBaseUrl: "https://gateway.example/v1",
+      loggedIn: true,
+      loginExpired: false,
+      isCurrent: false,
+      quota: {
+        status: "unknown" as const,
+        plan: "API Key",
+        primaryLabel: "",
+        primaryPercent: 0,
+        primaryResetAt: null,
+        secondaryLabel: "",
+        secondaryPercent: 0,
+        secondaryResetAt: null,
+        credits: "额度未知",
+      },
+    };
+    mockApi.getAppState
+      .mockResolvedValueOnce(state())
+      .mockResolvedValueOnce(state({ identities: [...state().identities, apiIdentity] }));
+    mockApi.addApiKeyIdentity.mockResolvedValue(apiIdentity);
+
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "Modex", level: 1 });
+    await userEvent.click(screen.getByRole("button", { name: "API Key 登录" }));
+    await userEvent.type(screen.getByLabelText("账号名称"), "Gateway");
+    await userEvent.type(screen.getByLabelText("API Key"), "sk-test-key");
+    await userEvent.type(screen.getByLabelText("Base URL"), "https://gateway.example/v1");
+    expect(screen.getByLabelText("API Key")).toHaveAttribute("type", "password");
+    await userEvent.click(screen.getByRole("button", { name: "保存 API Key" }));
+
+    await waitFor(() =>
+      expect(mockApi.addApiKeyIdentity).toHaveBeenCalledWith(
+        "Gateway",
+        "sk-test-key",
+        "https://gateway.example/v1",
+      ),
+    );
+    expect(await screen.findByRole("article", { name: /Gateway/ })).toBeInTheDocument();
+    expect(screen.queryByDisplayValue("sk-test-key")).not.toBeInTheDocument();
   });
 
   it("renders the shell without a left sidebar or legacy workspace labels", async () => {
