@@ -4,9 +4,9 @@
 
 **Goal:** Add independent API key identities with optional Codex Base URL support.
 
-**Architecture:** Extend the existing identity model with an auth type and optional base URL while keeping existing browser-login identities as the default. API key creation uses `codex login --with-api-key` against the identity's isolated `CODEX_HOME`; switching syncs that identity's `auth.json` and applies or removes a Modex-managed model provider in the active source `config.toml`, normalizing the Base URL to `/v1` and disabling WebSocket transport for relay compatibility.
+**Architecture:** Extend the existing identity model with an auth type and optional base URL while keeping existing browser-login identities as the default. API key creation uses `codex login --with-api-key` against the identity's isolated `CODEX_HOME`; switching syncs that identity's `auth.json` and applies or removes a Modex-managed model provider in the active source `config.toml`, preserving the configured Base URL and disabling WebSocket transport for relay compatibility.
 
-**Update:** API key identities use a manually entered account name, skip quota queries, normalize configured Base URLs to `/v1`, and keep current-account highlighting by matching the synchronized API-key `auth.json`.
+**Update:** API key identities use a manually entered account name, skip quota queries, preserve configured Base URLs, and keep current-account highlighting by matching the synchronized API-key `auth.json`.
 
 **Tech Stack:** Rust/Tauri backend, React/Vitest frontend, Codex CLI, JSON config, line-preserving TOML updates for one managed provider.
 
@@ -525,7 +525,7 @@ fn apply_openai_base_url_config_sets_or_removes_managed_provider() {
     apply_openai_base_url_config(temp.path(), Some("https://sub2api.flatincbr.com")).unwrap();
     assert_eq!(
         std::fs::read_to_string(config.path()).unwrap(),
-        "model = \"gpt-5.2\"\nmodel_provider = \"modex-api-key\"\n\n[projects.\"/tmp/project\"]\ntrust_level = \"trusted\"\n\n[mcp_servers.test]\ncommand = \"test\"\n\n[model_providers.modex-api-key]\nname = \"Modex API Key\"\nbase_url = \"https://sub2api.flatincbr.com/v1\"\nwire_api = \"responses\"\nrequires_openai_auth = true\nsupports_websockets = false\n"
+        "model = \"gpt-5.2\"\nmodel_provider = \"modex-api-key\"\n\n[projects.\"/tmp/project\"]\ntrust_level = \"trusted\"\n\n[mcp_servers.test]\ncommand = \"test\"\n\n[model_providers.modex-api-key]\nname = \"Modex API Key\"\nbase_url = \"https://sub2api.flatincbr.com\"\nwire_api = \"responses\"\nrequires_openai_auth = true\nsupports_websockets = false\n"
     );
 
     apply_openai_base_url_config(temp.path(), None).unwrap();
@@ -597,7 +597,7 @@ Expected: compile failure for missing `apply_openai_base_url_config` or `prepare
 In `src-tauri/src/core/codex.rs`, add runtime config helpers that:
 
 - remove stale legacy `openai_base_url` lines and stale `[model_providers.modex-api-key]` blocks;
-- normalize non-empty Base URLs to `/v1`;
+- trim surrounding whitespace while preserving the configured Base URL;
 - insert top-level `model_provider = "modex-api-key"` before the first TOML table;
 - append a `[model_providers.modex-api-key]` block with `wire_api = "responses"`, `requires_openai_auth = true`, and `supports_websockets = false`;
 - clear the managed `model_provider` selection when switching to an identity without `api_base_url`.

@@ -131,8 +131,9 @@ pub fn apply_openai_base_url_config(codex_home: &Path, base_url: Option<&str>) -
     let config_path = codex_home.join("config.toml");
     let existing = std::fs::read_to_string(&config_path).unwrap_or_default();
     let base_url = base_url
-        .map(normalize_openai_api_base_url)
-        .filter(|value| !value.is_empty());
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string);
     let mut lines = strip_managed_api_key_provider_config(&existing, base_url.is_some());
     if let Some(base_url) = base_url {
         let insert_at = top_level_insert_index(&lines);
@@ -193,18 +194,6 @@ fn strip_managed_api_key_provider_config(
         lines.push(line.to_string());
     }
     tidy_config_lines(lines)
-}
-
-fn normalize_openai_api_base_url(base_url: &str) -> String {
-    let base_url = base_url.trim().trim_end_matches('/');
-    if base_url.is_empty() {
-        return String::new();
-    }
-    if base_url.ends_with("/v1") {
-        base_url.to_string()
-    } else {
-        format!("{base_url}/v1")
-    }
 }
 
 fn top_level_insert_index(lines: &[String]) -> usize {

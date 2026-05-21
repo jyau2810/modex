@@ -20,7 +20,7 @@ Settings migration must preserve existing config files without requiring manual 
 
 Switching to a browser-login identity keeps the current flow: Modex synchronizes that identity's browser-login `auth.json` into the source `CODEX_HOME` and launches or activates Codex.
 
-Switching to an API key identity synchronizes that identity's API-key `auth.json` into the source `CODEX_HOME`, then materializes the optional base URL as a Modex-managed Codex model provider. Modex normalizes non-empty base URLs to `/v1`, uses the Responses API wire format, and disables WebSocket transport for relay compatibility. The API key value must not be shown in the UI after saving. If a base URL is provided, the active Codex configuration selects the managed provider; if it is empty, Modex removes its managed override. Current-account detection matches API-key identities by the synchronized API-key `auth.json` so switched API-key identities remain marked as current.
+Switching to an API key identity synchronizes that identity's API-key `auth.json` into the source `CODEX_HOME`, then materializes the optional base URL as a Modex-managed Codex model provider. Modex trims surrounding whitespace but otherwise preserves the configured base URL, uses the Responses API wire format, and disables WebSocket transport for relay compatibility. The API key value must not be shown in the UI after saving. If a base URL is provided, the active Codex configuration selects the managed provider; if it is empty, Modex removes its managed override. Current-account detection matches API-key identities by the synchronized API-key `auth.json` so switched API-key identities remain marked as current.
 
 ## Quota And Status
 
