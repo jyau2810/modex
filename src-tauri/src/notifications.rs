@@ -3,6 +3,8 @@ use std::collections::HashMap;
 use std::ffi::{c_char, c_int, CStr, CString};
 use std::fs::OpenOptions;
 use std::io::Write;
+#[cfg(target_os = "macos")]
+use std::path::Path;
 
 use tauri::AppHandle;
 use tauri_plugin_notification::NotificationExt;
@@ -70,10 +72,14 @@ pub fn refresh_notifications(
 
 pub fn send_notification(app: &AppHandle, notification: &NotificationSpec) {
     log_notification_attempt(notification, "attempt");
-    log_notification_permission(app, notification);
 
     #[cfg(target_os = "macos")]
     {
+        if !current_process_supports_macos_notifications() {
+            log_notification_attempt(notification, "skipped: unbundled process");
+            return;
+        }
+        log_notification_permission(app, notification);
         match send_macos_foreground_notification(notification) {
             Ok(status) => log_notification_attempt(notification, status),
             Err(error) => {
@@ -84,7 +90,10 @@ pub fn send_notification(app: &AppHandle, notification: &NotificationSpec) {
     }
 
     #[cfg(not(target_os = "macos"))]
-    send_tauri_notification(app, notification);
+    {
+        log_notification_permission(app, notification);
+        send_tauri_notification(app, notification);
+    }
 }
 
 fn log_notification_permission(app: &AppHandle, notification: &NotificationSpec) {
@@ -140,6 +149,42 @@ fn send_macos_foreground_notification(
             "macOS notification bridge failed with status {status}"
         ))),
     }
+}
+
+#[cfg(target_os = "macos")]
+fn current_process_supports_macos_notifications() -> bool {
+    std::env::current_exe()
+        .ok()
+        .as_deref()
+        .is_some_and(is_bundled_macos_executable)
+}
+
+#[cfg(target_os = "macos")]
+fn is_bundled_macos_executable(path: &Path) -> bool {
+    let Some(macos_dir) = path.parent() else {
+        return false;
+    };
+    if !path_name_eq(macos_dir.file_name(), "MacOS") {
+        return false;
+    }
+
+    let Some(contents_dir) = macos_dir.parent() else {
+        return false;
+    };
+    if !path_name_eq(contents_dir.file_name(), "Contents") {
+        return false;
+    }
+
+    contents_dir
+        .parent()
+        .and_then(Path::extension)
+        .and_then(|value| value.to_str())
+        .is_some_and(|value| value.eq_ignore_ascii_case("app"))
+}
+
+#[cfg(target_os = "macos")]
+fn path_name_eq(value: Option<&std::ffi::OsStr>, expected: &str) -> bool {
+    value.and_then(|value| value.to_str()) == Some(expected)
 }
 
 #[cfg(target_os = "macos")]
@@ -232,6 +277,8 @@ fn quota_recovered(previous: Option<&IdentityView>, current: &IdentityView) -> b
 mod tests {
     use crate::core::engine::IdentityView;
     use crate::core::quota::QuotaDisplay;
+    #[cfg(target_os = "macos")]
+    use std::path::Path;
 
     use super::*;
 
@@ -315,6 +362,22 @@ mod tests {
                 body: "recovered@example.com 额度已恢复，可以继续使用。".to_string(),
             }]
         );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn detects_bundled_macos_executable_paths() {
+        assert!(is_bundled_macos_executable(Path::new(
+            "/Applications/Modex.app/Contents/MacOS/modex",
+        )));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn rejects_unbundled_macos_executable_paths() {
+        assert!(!is_bundled_macos_executable(Path::new(
+            "/Users/dev/modex/src-tauri/target/debug/modex",
+        )));
     }
 
     fn identity(
