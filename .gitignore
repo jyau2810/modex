@@ -5,6 +5,7 @@ __pycache__/
 .coverage
 .venv-build/
 node_modules/
+.worktrees/
 src-tauri/gen/
 src-tauri/target/
 
