@@ -237,7 +237,7 @@ describe("App", () => {
 
   it("adds an api key identity with optional base url", async () => {
     const apiIdentity = {
-      name: "Gateway",
+      name: "project@example.com · 团队版",
       codexHome: "/Users/alex/.modex/api",
       authType: "apiKey" as const,
       apiBaseUrl: "https://gateway.example/v1",
@@ -245,15 +245,15 @@ describe("App", () => {
       loginExpired: false,
       isCurrent: false,
       quota: {
-        status: "unknown" as const,
-        plan: "API Key",
-        primaryLabel: "",
-        primaryPercent: 0,
-        primaryResetAt: null,
-        secondaryLabel: "",
-        secondaryPercent: 0,
-        secondaryResetAt: null,
-        credits: "额度未知",
+        status: "available" as const,
+        plan: "团队版",
+        primaryLabel: "5小时已用 12%",
+        primaryPercent: 12,
+        primaryResetAt: 1770000000,
+        secondaryLabel: "每周已用 34%",
+        secondaryPercent: 34,
+        secondaryResetAt: 1770036000,
+        credits: "额度可用",
       },
     };
     mockApi.getAppState
@@ -268,7 +268,7 @@ describe("App", () => {
     await userEvent.click(screen.getByRole("button", { name: /新增账号/ }));
     const addDialog = await screen.findByRole("dialog", { name: "新增账号" });
     await userEvent.click(within(addDialog).getByRole("button", { name: "API Key 登录" }));
-    await userEvent.type(screen.getByLabelText("账号名称"), "Gateway");
+    expect(screen.queryByLabelText("账号名称")).not.toBeInTheDocument();
     await userEvent.type(screen.getByLabelText("API Key"), "sk-test-key");
     await userEvent.type(screen.getByLabelText("Base URL"), "https://gateway.example/v1");
     expect(screen.getByLabelText("API Key")).toHaveAttribute("type", "password");
@@ -276,12 +276,13 @@ describe("App", () => {
 
     await waitFor(() =>
       expect(mockApi.addApiKeyIdentity).toHaveBeenCalledWith(
-        "Gateway",
         "sk-test-key",
         "https://gateway.example/v1",
       ),
     );
-    expect(await screen.findByRole("article", { name: /Gateway/ })).toBeInTheDocument();
+    const row = await screen.findByRole("article", { name: /project@example.com/ });
+    expect(row).toHaveTextContent("5小时已用");
+    expect(row).toHaveTextContent("12%");
     expect(screen.queryByDisplayValue("sk-test-key")).not.toBeInTheDocument();
   });
 

@@ -6,6 +6,8 @@
 
 **Architecture:** Extend the existing identity model with an auth type and optional base URL while keeping existing browser-login identities as the default. API key creation uses `codex login --with-api-key` against the identity's isolated `CODEX_HOME`; switching syncs that identity's `auth.json` and applies or removes a top-level `openai_base_url` override in the active source `config.toml`.
 
+**Update:** API key identities no longer ask for a manual display name. Modex now automatically derives the identity name from account/quota data when available, falls back to a unique API-key name, and refreshes quota immediately after creation.
+
 **Tech Stack:** Rust/Tauri backend, React/Vitest frontend, Codex CLI, JSON config, line-preserving TOML key update for one top-level setting.
 
 ---

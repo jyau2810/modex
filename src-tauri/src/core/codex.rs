@@ -8,6 +8,7 @@ use serde_json::Value;
 use tempfile::TempDir;
 
 use super::app_config::{AppIdentity, AppSettings};
+use super::auth::plan_label;
 use super::quota::{snapshot_from_rate_limits, QuotaSnapshot};
 use super::sync::sync_identity_auth;
 use super::{ModexError, ModexResult};
@@ -250,13 +251,49 @@ pub fn read_quota_snapshot(
     settings: &AppSettings,
     identity: &AppIdentity,
 ) -> ModexResult<QuotaSnapshot> {
-    let temp_home = temporary_auth_home(&identity.codex_home)?;
+    let temp_home = temporary_identity_home(identity)?;
     let payload = request_rate_limits(
         &settings.codex_binary,
         temp_home.path(),
         Duration::from_secs(30),
     )?;
     snapshot_from_rate_limits(&identity.name, &payload)
+}
+
+pub fn read_account_display_name(
+    settings: &AppSettings,
+    identity: &AppIdentity,
+) -> ModexResult<Option<String>> {
+    let temp_home = temporary_identity_home(identity)?;
+    let payload = request_app_server(
+        &settings.codex_binary,
+        temp_home.path(),
+        "account/read",
+        serde_json::json!({ "refreshToken": false }),
+        Duration::from_secs(30),
+    )?;
+    Ok(account_display_name_from_response(&payload))
+}
+
+pub fn account_display_name_from_response(payload: &Value) -> Option<String> {
+    let account = payload.get("account")?;
+    match account.get("type").and_then(Value::as_str)? {
+        "chatgpt" => {
+            let email = account.get("email").and_then(Value::as_str)?.trim();
+            if email.is_empty() {
+                return None;
+            }
+            let plan = plan_label(account.get("planType").and_then(Value::as_str));
+            if plan == "计划未知" {
+                Some(email.to_string())
+            } else {
+                Some(format!("{email} · {plan}"))
+            }
+        }
+        "amazonBedrock" => Some("Amazon Bedrock".to_string()),
+        "apiKey" => None,
+        _ => None,
+    }
 }
 
 pub fn request_rate_limits(
@@ -340,8 +377,8 @@ pub fn build_codex_env(codex_home: &Path) -> Vec<(String, String)> {
     vec![("CODEX_HOME".to_string(), codex_home.display().to_string())]
 }
 
-fn temporary_auth_home(identity_home: &Path) -> ModexResult<TempDir> {
-    let auth_file = identity_home.join("auth.json");
+fn temporary_identity_home(identity: &AppIdentity) -> ModexResult<TempDir> {
+    let auth_file = identity.codex_home.join("auth.json");
     if !auth_file.exists() {
         return Err(ModexError::from(format!(
             "账号缺少登录凭据：{}",
@@ -350,6 +387,7 @@ fn temporary_auth_home(identity_home: &Path) -> ModexResult<TempDir> {
     }
     let temp_home = tempfile::Builder::new().prefix("modex-auth-").tempdir()?;
     std::fs::copy(&auth_file, temp_home.path().join("auth.json"))?;
+    apply_openai_base_url_config(temp_home.path(), identity.api_base_url.as_deref())?;
     Ok(temp_home)
 }
 

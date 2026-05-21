@@ -1,8 +1,9 @@
 use assert_fs::prelude::*;
 use modex_lib::core::app_config::{AppIdentity, AppSettings, IdentityAuthType};
 use modex_lib::core::codex::{
-    api_key_login_invocation, apply_openai_base_url_config, open_codex_app_launch_command,
-    prepare_identity_for_launch, resolve_codex_binary_with, ProgramInvocation,
+    account_display_name_from_response, api_key_login_invocation, apply_openai_base_url_config,
+    open_codex_app_launch_command, prepare_identity_for_launch, resolve_codex_binary_with,
+    ProgramInvocation,
 };
 
 #[cfg(target_os = "macos")]
@@ -51,6 +52,25 @@ fn api_key_login_command_reads_key_from_stdin() {
             "/tmp/modex-test/.modex/api".to_string()
         )]
     );
+}
+
+#[test]
+fn account_display_name_uses_chatgpt_email_and_ignores_api_key_accounts() {
+    let chatgpt_name = account_display_name_from_response(&serde_json::json!({
+        "account": {
+            "type": "chatgpt",
+            "email": "project@example.com",
+            "planType": "team"
+        }
+    }));
+    let api_key_name = account_display_name_from_response(&serde_json::json!({
+        "account": {
+            "type": "apiKey"
+        }
+    }));
+
+    assert_eq!(chatgpt_name.as_deref(), Some("project@example.com · 团队版"));
+    assert_eq!(api_key_name, None);
 }
 
 #[test]

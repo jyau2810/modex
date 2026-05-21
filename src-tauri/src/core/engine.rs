@@ -10,10 +10,11 @@ use super::app_config::{
 };
 use super::auth::{
     auth_identity_display_name, auth_identity_match_key, auth_plan_type, has_local_auth,
-    unique_identity_name,
+    plan_label, unique_identity_name,
 };
 use super::codex::{
-    activate_codex_app, open_codex_app, read_quota_snapshot, run_api_key_login, run_login,
+    activate_codex_app, open_codex_app, read_account_display_name, read_quota_snapshot,
+    run_api_key_login, run_login,
 };
 use super::identity_home::{default_new_identity, random_digits};
 use super::quota::{quota_display, QuotaDisplay, QuotaSnapshot};
@@ -159,52 +160,66 @@ impl AppEngine {
 
     pub fn add_api_key_identity(
         &mut self,
-        display_name: String,
         api_key: String,
         base_url: Option<String>,
     ) -> ModexResult<IdentityView> {
         self.add_api_key_identity_with_operations(
-            &display_name,
             &api_key,
             base_url,
             random_digits,
             run_api_key_login,
+            read_account_display_name,
+            read_quota_snapshot,
         )
     }
 
     pub fn add_api_key_identity_with_operations(
         &mut self,
-        display_name: &str,
         api_key: &str,
         base_url: Option<String>,
         mut random_digits: impl FnMut() -> String,
         login: impl FnOnce(&AppSettings, &AppIdentity, &str) -> ModexResult<()>,
+        read_account_name: impl FnOnce(&AppSettings, &AppIdentity) -> ModexResult<Option<String>>,
+        read_quota: impl FnOnce(&AppSettings, &AppIdentity) -> ModexResult<QuotaSnapshot>,
     ) -> ModexResult<IdentityView> {
-        let display_name = display_name.trim();
-        if display_name.is_empty() {
-            return Err(ModexError::from("账号名称不能为空"));
-        }
         let api_key = api_key.trim();
         if api_key.is_empty() {
             return Err(ModexError::from("API Key 不能为空"));
         }
         let home = managed_home_root(&self.settings);
         let mut identity = default_new_identity(&home, &mut random_digits)?;
-        identity.name = unique_identity_name(
-            display_name,
-            self.settings
-                .identities
-                .iter()
-                .map(|identity| identity.name.as_str()),
-        );
+        identity.name = "API Key".to_string();
         identity.auth_type = IdentityAuthType::ApiKey;
         identity.api_base_url = clean_optional(base_url);
         if let Err(error) = login(&self.settings, &identity, api_key) {
             let _ = fs::remove_dir_all(&identity.codex_home);
             return Err(error);
         }
+        let account_name = read_account_name(&self.settings, &identity)
+            .ok()
+            .flatten()
+            .and_then(clean_name);
+        let quota_result = read_quota(&self.settings, &identity);
+        let base_name =
+            account_name.unwrap_or_else(|| api_key_fallback_name(quota_result.as_ref().ok()));
+        identity.name = unique_identity_name(
+            &base_name,
+            self.settings
+                .identities
+                .iter()
+                .map(|identity| identity.name.as_str()),
+        );
         self.settings.identities.push(identity.clone());
         self.settings.has_completed_setup = true;
+        match quota_result {
+            Ok(mut snapshot) => {
+                snapshot.identity = identity.name.clone();
+                self.set_snapshot(&identity.name, snapshot);
+            }
+            Err(error) => {
+                self.set_error(&identity.name, error.to_string());
+            }
+        }
         self.save()?;
         Ok(self.identity_view(&identity))
     }
@@ -523,6 +538,22 @@ fn clean_optional(value: Option<String>) -> Option<String> {
     value
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
+}
+
+fn clean_name(value: String) -> Option<String> {
+    let value = value.trim().to_string();
+    (!value.is_empty()).then_some(value)
+}
+
+fn api_key_fallback_name(snapshot: Option<&QuotaSnapshot>) -> String {
+    let plan = snapshot
+        .and_then(|snapshot| snapshot.plan_type.as_deref())
+        .map(|plan| plan_label(Some(plan)))
+        .filter(|label| label != "计划未知");
+    match plan {
+        Some(plan) => format!("API Key · {plan}"),
+        None => "API Key".to_string(),
+    }
 }
 
 fn sanitize_daily_wake_settings(mut settings: DailyWakeSettings) -> DailyWakeSettings {

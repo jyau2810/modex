@@ -5,6 +5,7 @@ use modex_lib::core::app_config::{
     load_app_settings_from_path, AppIdentity, AppSettings, IdentityAuthType,
 };
 use modex_lib::core::engine::{AppEngine, SettingsPatch};
+use modex_lib::core::quota::{QuotaSnapshot, RateWindow};
 
 fn jwt_with_claims(claims: serde_json::Value) -> String {
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -68,10 +69,11 @@ fn add_api_key_identity_creates_isolated_api_key_account() {
     );
     let mut login_home = None;
     let mut login_key = None;
+    let mut read_account_home = None;
+    let mut quota_home = None;
 
     let identity = engine
         .add_api_key_identity_with_operations(
-            "Gateway",
             " sk-test-key ",
             Some(" https://gateway.example/v1 ".to_string()),
             || "123456789012".to_string(),
@@ -86,20 +88,54 @@ fn add_api_key_identity_creates_isolated_api_key_account() {
                 .unwrap();
                 Ok(())
             },
+            |_settings, identity| {
+                read_account_home = Some(identity.codex_home.clone());
+                Ok(Some("project@example.com · 团队版".to_string()))
+            },
+            |_settings, identity| {
+                quota_home = Some(identity.codex_home.clone());
+                Ok(QuotaSnapshot {
+                    identity: identity.name.clone(),
+                    plan_type: Some("team".to_string()),
+                    primary: Some(RateWindow {
+                        used_percent: 12,
+                        resets_at: Some(1_770_000_000),
+                        window_duration_mins: Some(300),
+                    }),
+                    secondary: Some(RateWindow {
+                        used_percent: 34,
+                        resets_at: Some(1_770_036_000),
+                        window_duration_mins: Some(10080),
+                    }),
+                    credits_has_credits: Some(true),
+                    credits_unlimited: Some(false),
+                    reached_type: None,
+                })
+            },
         )
         .unwrap();
 
-    assert_eq!(identity.name, "Gateway");
+    assert_eq!(identity.name, "project@example.com · 团队版");
     assert_eq!(identity.auth_type, IdentityAuthType::ApiKey);
     assert_eq!(
         identity.api_base_url.as_deref(),
         Some("https://gateway.example/v1")
     );
     assert!(identity.logged_in);
+    assert_eq!(identity.quota.status, "available");
+    assert_eq!(identity.quota.plan, "团队版");
+    assert_eq!(identity.quota.primary_percent, 12);
+    assert_eq!(identity.quota.secondary_percent, 34);
     assert_eq!(login_home.unwrap(), temp.path().join(".modex/123456789012"));
     assert_eq!(login_key.as_deref(), Some("sk-test-key"));
+    assert_eq!(
+        read_account_home.unwrap(),
+        temp.path().join(".modex/123456789012")
+    );
+    assert_eq!(quota_home.unwrap(), temp.path().join(".modex/123456789012"));
 
     let saved = load_app_settings_from_path(config.path()).unwrap();
+    assert_eq!(saved.identities[0].name, "project@example.com · 团队版");
     assert_eq!(saved.identities[0].auth_type, IdentityAuthType::ApiKey);
     assert_eq!(
         saved.identities[0].api_base_url.as_deref(),
@@ -108,7 +144,7 @@ fn add_api_key_identity_creates_isolated_api_key_account() {
 }
 
 #[test]
-fn add_api_key_identity_rejects_empty_name_or_key() {
+fn add_api_key_identity_rejects_empty_key() {
     let temp = assert_fs::TempDir::new().unwrap();
     let config = temp.child("config.json");
     let mut engine = AppEngine::new(
@@ -116,25 +152,25 @@ fn add_api_key_identity_rejects_empty_name_or_key() {
         config.path().to_path_buf(),
     );
 
-    let empty_name = engine.add_api_key_identity_with_operations(
-        " ",
-        "sk-test",
-        None,
-        || "123456789012".to_string(),
-        |_settings, _identity, _api_key| Ok(()),
-    );
     let empty_key = engine.add_api_key_identity_with_operations(
-        "API",
         " ",
         None,
         || "123456789012".to_string(),
         |_settings, _identity, _api_key| Ok(()),
+        |_settings, _identity| Ok(Some("project@example.com".to_string())),
+        |_settings, _identity| {
+            Ok(QuotaSnapshot {
+                identity: "project@example.com".to_string(),
+                plan_type: None,
+                primary: None,
+                secondary: None,
+                credits_has_credits: None,
+                credits_unlimited: None,
+                reached_type: None,
+            })
+        },
     );
 
-    assert!(empty_name
-        .unwrap_err()
-        .to_string()
-        .contains("账号名称不能为空"));
     assert!(empty_key
         .unwrap_err()
         .to_string()
