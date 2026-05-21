@@ -329,6 +329,8 @@ mod tests {
             codex_home: format!("/tmp/{name}"),
             monitor: true,
             workspace_id: None,
+            auth_type: Default::default(),
+            api_base_url: None,
             logged_in,
             login_expired,
             is_current: false,

@@ -42,6 +42,46 @@ pub fn run_login(settings: &AppSettings, identity: &AppIdentity) -> ModexResult<
     Ok(())
 }
 
+pub fn api_key_login_invocation(
+    settings: &AppSettings,
+    identity: &AppIdentity,
+) -> ProgramInvocation {
+    ProgramInvocation {
+        program: resolve_codex_binary(&settings.codex_binary),
+        args: vec!["login".to_string(), "--with-api-key".to_string()],
+        envs: build_codex_env(&identity.codex_home),
+    }
+}
+
+pub fn run_api_key_login(
+    settings: &AppSettings,
+    identity: &AppIdentity,
+    api_key: &str,
+) -> ModexResult<()> {
+    std::fs::create_dir_all(&identity.codex_home)?;
+    let invocation = api_key_login_invocation(settings, identity);
+    let mut child = Command::new(invocation.program)
+        .args(invocation.args)
+        .envs(invocation.envs)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| ModexError::from("codex login stdin is unavailable"))?;
+    stdin.write_all(api_key.as_bytes())?;
+    stdin.flush()?;
+    drop(stdin);
+    let status = child.wait()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(ModexError::from("API Key 登录失败"))
+    }
+}
+
 pub fn open_codex_app(settings: &AppSettings, identity: &AppIdentity) -> ModexResult<()> {
     open_codex_app_with_operations(
         settings,

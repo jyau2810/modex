@@ -6,13 +6,15 @@ use serde::{Deserialize, Serialize};
 
 use super::app_config::{
     default_app_config_path, load_app_settings_from_path, save_app_settings_to_path, AppIdentity,
-    AppSettings, DailyWakeSettings,
+    AppSettings, DailyWakeSettings, IdentityAuthType,
 };
 use super::auth::{
     auth_identity_display_name, auth_identity_match_key, auth_plan_type, has_local_auth,
     unique_identity_name,
 };
-use super::codex::{activate_codex_app, open_codex_app, read_quota_snapshot, run_login};
+use super::codex::{
+    activate_codex_app, open_codex_app, read_quota_snapshot, run_api_key_login, run_login,
+};
 use super::identity_home::{default_new_identity, random_digits};
 use super::quota::{quota_display, QuotaDisplay, QuotaSnapshot};
 use super::{ModexError, ModexResult};
@@ -24,6 +26,8 @@ pub struct IdentityView {
     pub codex_home: String,
     pub monitor: bool,
     pub workspace_id: Option<String>,
+    pub auth_type: IdentityAuthType,
+    pub api_base_url: Option<String>,
     pub logged_in: bool,
     pub login_expired: bool,
     pub is_current: bool,
@@ -146,6 +150,58 @@ impl AppEngine {
                     .map(|identity| identity.name.as_str()),
             );
             identity.name = name;
+        }
+        self.settings.identities.push(identity.clone());
+        self.settings.has_completed_setup = true;
+        self.save()?;
+        Ok(self.identity_view(&identity))
+    }
+
+    pub fn add_api_key_identity(
+        &mut self,
+        display_name: String,
+        api_key: String,
+        base_url: Option<String>,
+    ) -> ModexResult<IdentityView> {
+        self.add_api_key_identity_with_operations(
+            &display_name,
+            &api_key,
+            base_url,
+            random_digits,
+            run_api_key_login,
+        )
+    }
+
+    pub fn add_api_key_identity_with_operations(
+        &mut self,
+        display_name: &str,
+        api_key: &str,
+        base_url: Option<String>,
+        mut random_digits: impl FnMut() -> String,
+        login: impl FnOnce(&AppSettings, &AppIdentity, &str) -> ModexResult<()>,
+    ) -> ModexResult<IdentityView> {
+        let display_name = display_name.trim();
+        if display_name.is_empty() {
+            return Err(ModexError::from("账号名称不能为空"));
+        }
+        let api_key = api_key.trim();
+        if api_key.is_empty() {
+            return Err(ModexError::from("API Key 不能为空"));
+        }
+        let home = managed_home_root(&self.settings);
+        let mut identity = default_new_identity(&home, &mut random_digits)?;
+        identity.name = unique_identity_name(
+            display_name,
+            self.settings
+                .identities
+                .iter()
+                .map(|identity| identity.name.as_str()),
+        );
+        identity.auth_type = IdentityAuthType::ApiKey;
+        identity.api_base_url = clean_optional(base_url);
+        if let Err(error) = login(&self.settings, &identity, api_key) {
+            let _ = fs::remove_dir_all(&identity.codex_home);
+            return Err(error);
         }
         self.settings.identities.push(identity.clone());
         self.settings.has_completed_setup = true;
@@ -337,7 +393,11 @@ impl AppEngine {
     }
 
     pub fn set_error(&mut self, name: &str, error: String) {
-        if is_login_expired_error(&error) {
+        let is_api_key_identity = self
+            .identity(name)
+            .ok()
+            .is_some_and(|identity| identity.auth_type == IdentityAuthType::ApiKey);
+        if is_login_expired_error(&error) && !is_api_key_identity {
             self.expired_identity_names.insert(name.to_string());
         } else {
             self.expired_identity_names.remove(name);
@@ -401,6 +461,8 @@ impl AppEngine {
             codex_home: identity.codex_home.display().to_string(),
             monitor: identity.monitor,
             workspace_id: identity.workspace_id.clone(),
+            auth_type: identity.auth_type.clone(),
+            api_base_url: identity.api_base_url.clone(),
             logged_in: has_local_auth(&identity.codex_home)
                 && !self.expired_identity_names.contains(&identity.name),
             login_expired: self.expired_identity_names.contains(&identity.name),

@@ -1,7 +1,9 @@
 use std::path::PathBuf;
 
 use assert_fs::prelude::*;
-use modex_lib::core::app_config::{load_app_settings_from_path, AppIdentity, AppSettings};
+use modex_lib::core::app_config::{
+    load_app_settings_from_path, AppIdentity, AppSettings, IdentityAuthType,
+};
 use modex_lib::core::engine::{AppEngine, SettingsPatch};
 
 fn jwt_with_claims(claims: serde_json::Value) -> String {
@@ -54,6 +56,120 @@ fn add_identity_persists_new_managed_identity() {
     let saved = load_app_settings_from_path(config.path()).unwrap();
     assert_eq!(saved.identities.len(), 1);
     assert!(saved.has_completed_setup);
+}
+
+#[test]
+fn add_api_key_identity_creates_isolated_api_key_account() {
+    let temp = assert_fs::TempDir::new().unwrap();
+    let config = temp.child("config.json");
+    let mut engine = AppEngine::new(
+        AppSettings::default_for_home(temp.path().to_path_buf()),
+        config.path().to_path_buf(),
+    );
+    let mut login_home = None;
+    let mut login_key = None;
+
+    let identity = engine
+        .add_api_key_identity_with_operations(
+            "Gateway",
+            " sk-test-key ",
+            Some(" https://gateway.example/v1 ".to_string()),
+            || "123456789012".to_string(),
+            |_settings, identity, api_key| {
+                login_home = Some(identity.codex_home.clone());
+                login_key = Some(api_key.to_string());
+                std::fs::create_dir_all(&identity.codex_home).unwrap();
+                std::fs::write(
+                    identity.codex_home.join("auth.json"),
+                    r#"{"auth_mode":"apikey","OPENAI_API_KEY":"sk-test-key"}"#,
+                )
+                .unwrap();
+                Ok(())
+            },
+        )
+        .unwrap();
+
+    assert_eq!(identity.name, "Gateway");
+    assert_eq!(identity.auth_type, IdentityAuthType::ApiKey);
+    assert_eq!(
+        identity.api_base_url.as_deref(),
+        Some("https://gateway.example/v1")
+    );
+    assert!(identity.logged_in);
+    assert_eq!(login_home.unwrap(), temp.path().join(".modex/123456789012"));
+    assert_eq!(login_key.as_deref(), Some("sk-test-key"));
+
+    let saved = load_app_settings_from_path(config.path()).unwrap();
+    assert_eq!(saved.identities[0].auth_type, IdentityAuthType::ApiKey);
+    assert_eq!(
+        saved.identities[0].api_base_url.as_deref(),
+        Some("https://gateway.example/v1")
+    );
+}
+
+#[test]
+fn add_api_key_identity_rejects_empty_name_or_key() {
+    let temp = assert_fs::TempDir::new().unwrap();
+    let config = temp.child("config.json");
+    let mut engine = AppEngine::new(
+        AppSettings::default_for_home(temp.path().to_path_buf()),
+        config.path().to_path_buf(),
+    );
+
+    let empty_name = engine.add_api_key_identity_with_operations(
+        " ",
+        "sk-test",
+        None,
+        || "123456789012".to_string(),
+        |_settings, _identity, _api_key| Ok(()),
+    );
+    let empty_key = engine.add_api_key_identity_with_operations(
+        "API",
+        " ",
+        None,
+        || "123456789012".to_string(),
+        |_settings, _identity, _api_key| Ok(()),
+    );
+
+    assert!(empty_name
+        .unwrap_err()
+        .to_string()
+        .contains("账号名称不能为空"));
+    assert!(empty_key
+        .unwrap_err()
+        .to_string()
+        .contains("API Key 不能为空"));
+    assert!(engine.settings().identities.is_empty());
+}
+
+#[test]
+fn api_key_quota_errors_do_not_mark_login_expired() {
+    let temp = assert_fs::TempDir::new().unwrap();
+    let config = temp.child("config.json");
+    let api_home = temp.path().join(".modex/api");
+    std::fs::create_dir_all(&api_home).unwrap();
+    std::fs::write(
+        api_home.join("auth.json"),
+        r#"{"auth_mode":"apikey","OPENAI_API_KEY":"sk-test"}"#,
+    )
+    .unwrap();
+    let mut settings = AppSettings::default_for_home(temp.path().to_path_buf());
+    settings.identities.push(AppIdentity {
+        name: "Gateway".to_string(),
+        codex_home: api_home,
+        monitor: false,
+        workspace_id: None,
+        auth_type: IdentityAuthType::ApiKey,
+        api_base_url: None,
+    });
+    let mut engine = AppEngine::new(settings, config.path().to_path_buf());
+
+    engine.set_error("Gateway", "unauthorized".to_string());
+
+    let identity = engine.app_state().identities.into_iter().next().unwrap();
+    assert!(identity.logged_in);
+    assert!(!identity.login_expired);
+    assert_eq!(identity.quota.status, "error");
 }
 
 #[test]

@@ -233,6 +233,8 @@ fn identity_view(
         codex_home: format!("/tmp/{name}"),
         monitor: false,
         workspace_id: None,
+        auth_type: Default::default(),
+        api_base_url: None,
         logged_in,
         login_expired,
         is_current: false,

@@ -12,6 +12,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::get_app_state,
             commands::add_identity,
+            commands::add_api_key_identity,
             commands::import_current_identity,
             commands::delete_identity,
             commands::switch_identity,

@@ -1,6 +1,9 @@
 use assert_fs::prelude::*;
-use modex_lib::core::app_config::AppSettings;
-use modex_lib::core::codex::{open_codex_app_launch_command, resolve_codex_binary_with};
+use modex_lib::core::app_config::{AppIdentity, AppSettings, IdentityAuthType};
+use modex_lib::core::codex::{
+    api_key_login_invocation, open_codex_app_launch_command, resolve_codex_binary_with,
+    ProgramInvocation,
+};
 
 #[cfg(target_os = "macos")]
 use modex_lib::core::codex::macos_quit_codex_app_script;
@@ -21,6 +24,33 @@ fn resolves_configured_path_without_path_lookup() {
     let resolved = resolve_codex_binary_with("~/bin/codex", |_| Some("/wrong/codex".into()), &[]);
 
     assert!(resolved.ends_with("bin/codex"));
+}
+
+#[test]
+fn api_key_login_command_reads_key_from_stdin() {
+    let settings = AppSettings::default_for_home("/tmp/modex-test".into());
+    let identity = AppIdentity {
+        name: "API".to_string(),
+        codex_home: "/tmp/modex-test/.modex/api".into(),
+        monitor: false,
+        workspace_id: None,
+        auth_type: IdentityAuthType::ApiKey,
+        api_base_url: None,
+    };
+
+    let invocation: ProgramInvocation = api_key_login_invocation(&settings, &identity);
+
+    assert_eq!(
+        invocation.args,
+        vec!["login".to_string(), "--with-api-key".to_string()]
+    );
+    assert_eq!(
+        invocation.envs,
+        vec![(
+            "CODEX_HOME".to_string(),
+            "/tmp/modex-test/.modex/api".to_string()
+        )]
+    );
 }
 
 #[cfg(target_os = "macos")]

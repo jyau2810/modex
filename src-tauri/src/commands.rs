@@ -101,6 +101,24 @@ pub fn add_identity(app: AppHandle, state: State<'_, ModexState>) -> Result<Iden
 }
 
 #[tauri::command]
+pub async fn add_api_key_identity(
+    app: AppHandle,
+    display_name: String,
+    api_key: String,
+    base_url: Option<String>,
+) -> Result<IdentityView, String> {
+    run_blocking(move || {
+        let state = app.state::<ModexState>();
+        let identity = with_engine_ref(state.inner(), |engine| {
+            engine.add_api_key_identity(display_name, api_key, base_url)
+        })?;
+        refresh_tray(&app);
+        Ok(identity)
+    })
+    .await
+}
+
+#[tauri::command]
 pub fn import_current_identity(
     app: AppHandle,
     state: State<'_, ModexState>,
