@@ -6,7 +6,7 @@ use modex_lib::core::sync::{sync_source_history_provider, HistorySyncProvider};
 use rusqlite::{params, Connection};
 
 #[test]
-fn sync_source_history_provider_retags_threads_and_rollouts_bidirectionally() {
+fn sync_source_history_provider_retags_threads_bidirectionally_without_rewriting_rollouts() {
     let temp = assert_fs::TempDir::new().unwrap();
     let source_home = temp.child("source");
     source_home.create_dir_all().unwrap();
@@ -67,13 +67,23 @@ fn sync_source_history_provider_retags_threads_and_rollouts_bidirectionally() {
             ),
         ]
     );
+    let original_primary_rollout = fs::read_to_string(primary_rollout.path()).unwrap();
+    let original_archived_rollout = fs::read_to_string(archived_rollout.path()).unwrap();
     assert_eq!(
         rollout_provider(primary_rollout.path()).as_deref(),
-        Some("modex-api-key")
+        Some("openai")
     );
     assert_eq!(
         rollout_provider(archived_rollout.path()).as_deref(),
-        Some("modex-api-key")
+        Some("openai")
+    );
+    assert_eq!(
+        fs::read_to_string(primary_rollout.path()).unwrap(),
+        original_primary_rollout
+    );
+    assert_eq!(
+        fs::read_to_string(archived_rollout.path()).unwrap(),
+        original_archived_rollout
     );
 
     sync_source_history_provider(source_home.path(), HistorySyncProvider::OpenAi).unwrap();
@@ -102,6 +112,57 @@ fn sync_source_history_provider_retags_threads_and_rollouts_bidirectionally() {
     assert_eq!(
         rollout_provider(archived_rollout.path()).as_deref(),
         Some("openai")
+    );
+}
+
+#[test]
+fn sync_source_history_provider_does_not_touch_current_rollout_session_meta_format() {
+    let temp = assert_fs::TempDir::new().unwrap();
+    let source_home = temp.child("source");
+    source_home.create_dir_all().unwrap();
+    let state_path = source_home.child("state_5.sqlite");
+    let archived_sessions_path = source_home.child("archived_sessions");
+    archived_sessions_path.create_dir_all().unwrap();
+
+    let archived_rollout = archived_sessions_path.child("project-current.jsonl");
+    archived_rollout
+        .write_str(&current_rollout_jsonl(
+            "openai",
+            "thread-current",
+            true,
+            "/tmp/project-current",
+        ))
+        .unwrap();
+
+    create_threads_db(
+        state_path.path(),
+        &[thread_row(
+            "thread-current",
+            "openai",
+            "archived_sessions/project-current.jsonl",
+            true,
+        )],
+    );
+    let original_rollout = fs::read_to_string(archived_rollout.path()).unwrap();
+
+    sync_source_history_provider(source_home.path(), HistorySyncProvider::ModexApiKey).unwrap();
+
+    let first_line = first_rollout_json(archived_rollout.path());
+    assert_eq!(first_line["type"], "session_meta");
+    assert_eq!(first_line["payload"]["model_provider"], "openai");
+    assert_eq!(
+        rollout_provider(archived_rollout.path()).as_deref(),
+        Some("openai")
+    );
+    assert_eq!(fs::read_to_string(archived_rollout.path()).unwrap(), original_rollout);
+    assert_eq!(
+        thread_rows(state_path.path()),
+        vec![(
+            "thread-current".to_string(),
+            "modex-api-key".to_string(),
+            1,
+            "archived_sessions/project-current.jsonl".to_string()
+        )]
     );
 }
 
@@ -188,19 +249,30 @@ fn thread_rows(path: &Path) -> Vec<(String, String, i64, String)> {
 }
 
 fn rollout_provider(path: &Path) -> Option<String> {
+    let payload = first_rollout_json(path);
+    payload
+        .get("session_meta")
+        .and_then(|value| value.get("payload"))
+        .or_else(|| {
+            payload
+                .get("type")
+                .and_then(serde_json::Value::as_str)
+                .filter(|kind| *kind == "session_meta")
+                .and_then(|_| payload.get("payload"))
+        })
+        .and_then(|value| value.get("model_provider"))
+        .and_then(serde_json::Value::as_str)
+        .map(ToString::to_string)
+}
+
+fn first_rollout_json(path: &Path) -> serde_json::Value {
     let first_line = fs::read_to_string(path)
         .unwrap()
         .lines()
         .next()
         .unwrap_or_default()
         .to_string();
-    let payload: serde_json::Value = serde_json::from_str(&first_line).unwrap();
-    payload
-        .get("session_meta")
-        .and_then(|value| value.get("payload"))
-        .and_then(|value| value.get("model_provider"))
-        .and_then(serde_json::Value::as_str)
-        .map(ToString::to_string)
+    serde_json::from_str(&first_line).unwrap()
 }
 
 fn rollout_jsonl(provider: &str, thread_id: &str, archived: bool, cwd: &str) -> String {
@@ -219,6 +291,31 @@ fn rollout_jsonl(provider: &str, thread_id: &str, archived: bool, cwd: &str) -> 
         serde_json::json!({
             "event": "message",
             "thread_id": thread_id
+        })
+    )
+}
+
+fn current_rollout_jsonl(provider: &str, thread_id: &str, archived: bool, cwd: &str) -> String {
+    format!(
+        "{}\n{}\n",
+        serde_json::json!({
+            "timestamp": "2026-03-23T07:03:03.184Z",
+            "type": "session_meta",
+            "payload": {
+                "id": thread_id,
+                "timestamp": "2026-03-23T07:02:25.458Z",
+                "cwd": cwd,
+                "source": "vscode",
+                "archived": archived,
+                "model_provider": provider
+            }
+        }),
+        serde_json::json!({
+            "timestamp": "2026-03-23T07:03:03.185Z",
+            "type": "response_item",
+            "payload": {
+                "thread_id": thread_id
+            }
         })
     )
 }

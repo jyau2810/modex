@@ -170,10 +170,7 @@ fn prepare_identity_for_launch_syncs_api_key_auth_and_applies_base_url() {
         .unwrap()
         .to_string();
     let payload: serde_json::Value = serde_json::from_str(&first_line).unwrap();
-    assert_eq!(
-        payload["session_meta"]["payload"]["model_provider"],
-        "modex-api-key"
-    );
+    assert_eq!(payload["session_meta"]["payload"]["model_provider"], "openai");
 }
 
 #[test]
@@ -183,31 +180,9 @@ fn prepare_identity_for_launch_rolls_back_runtime_files_when_history_sync_fails(
     let api_home = temp.path().join(".modex/api");
     std::fs::create_dir_all(&source_home).unwrap();
     std::fs::create_dir_all(&api_home).unwrap();
-    std::fs::create_dir_all(source_home.join("sessions")).unwrap();
     std::fs::write(source_home.join("auth.json"), r#"{"old":true}"#).unwrap();
     std::fs::write(source_home.join("config.toml"), "model = \"gpt-5.2\"\n").unwrap();
-    std::fs::write(
-        source_home.join("sessions/a-existing.jsonl"),
-        format!(
-            "{}\n{}\n",
-            serde_json::json!({
-                "session_meta": {
-                    "payload": {
-                        "model_provider": "openai"
-                    }
-                }
-            }),
-            serde_json::json!({"event":"message"})
-        ),
-    )
-    .unwrap();
-    create_threads_db(
-        &source_home.join("state_5.sqlite"),
-        &[
-            ("thread-a", "openai", "sessions/a-existing.jsonl", 0_i64),
-            ("thread-b", "openai", "sessions/b-missing.jsonl", 0_i64),
-        ],
-    );
+    std::fs::write(source_home.join("state_5.sqlite"), "not-a-sqlite-db").unwrap();
     std::fs::write(
         api_home.join("auth.json"),
         r#"{"auth_mode":"apikey","OPENAI_API_KEY":"sk-test"}"#,
@@ -227,7 +202,8 @@ fn prepare_identity_for_launch_rolls_back_runtime_files_when_history_sync_fails(
 
     let error = prepare_identity_for_launch(&settings, &identity).unwrap_err();
 
-    assert!(error.to_string().contains("b-missing.jsonl"));
+    let error_text = error.to_string().to_ascii_lowercase();
+    assert!(error_text.contains("database") || error_text.contains("sqlite"));
     assert_eq!(
         std::fs::read_to_string(source_home.join("auth.json")).unwrap(),
         r#"{"old":true}"#
@@ -236,25 +212,9 @@ fn prepare_identity_for_launch_rolls_back_runtime_files_when_history_sync_fails(
         std::fs::read_to_string(source_home.join("config.toml")).unwrap(),
         "model = \"gpt-5.2\"\n"
     );
-    let connection = Connection::open(source_home.join("state_5.sqlite")).unwrap();
-    let providers = connection
-        .prepare("SELECT model_provider FROM threads ORDER BY id")
-        .unwrap()
-        .query_map([], |row| row.get::<_, String>(0))
-        .unwrap()
-        .map(Result::unwrap)
-        .collect::<Vec<_>>();
-    assert_eq!(providers, vec!["openai".to_string(), "openai".to_string()]);
-    let first_line = std::fs::read_to_string(source_home.join("sessions/a-existing.jsonl"))
-        .unwrap()
-        .lines()
-        .next()
-        .unwrap()
-        .to_string();
-    let payload: serde_json::Value = serde_json::from_str(&first_line).unwrap();
     assert_eq!(
-        payload["session_meta"]["payload"]["model_provider"],
-        "openai"
+        std::fs::read_to_string(source_home.join("state_5.sqlite")).unwrap(),
+        "not-a-sqlite-db"
     );
 }
 

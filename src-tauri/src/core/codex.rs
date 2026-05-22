@@ -11,10 +11,7 @@ use tempfile::TempDir;
 use super::app_config::{AppIdentity, AppSettings};
 use super::auth::plan_label;
 use super::quota::{snapshot_from_rate_limits, QuotaSnapshot};
-use super::sync::{
-    source_history_rollout_paths, sync_identity_auth, sync_source_history_provider,
-    HistorySyncProvider,
-};
+use super::sync::{sync_identity_auth, sync_source_history_provider, HistorySyncProvider};
 use super::{ModexError, ModexResult};
 
 const DEFAULT_CODEX_APP_CLI: &str = "/Applications/Codex.app/Contents/Resources/codex";
@@ -205,16 +202,13 @@ struct RuntimeHomeBackup {
 
 impl RuntimeHomeBackup {
     fn capture(source_home: &Path) -> ModexResult<Self> {
-        let mut tracked_paths = vec![
+        let tracked_paths = vec![
             source_home.join("auth.json"),
             source_home.join("config.toml"),
             source_home.join("state_5.sqlite"),
             source_home.join("state_5.sqlite-wal"),
             source_home.join("state_5.sqlite-shm"),
         ];
-        tracked_paths.extend(source_history_rollout_paths(source_home)?);
-        tracked_paths.sort();
-        tracked_paths.dedup();
 
         let temp_dir = TempDir::new()?;
         let mut snapshots = Vec::with_capacity(tracked_paths.len());

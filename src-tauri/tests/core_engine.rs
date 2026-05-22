@@ -401,7 +401,7 @@ fn import_current_identity_self_heals_history_view_for_existing_api_key_account(
     );
     assert_eq!(
         rollout_provider(&source_home.join("sessions/thread-a.jsonl")).as_deref(),
-        Some("modex-api-key")
+        Some("openai")
     );
 }
 
@@ -554,7 +554,7 @@ fn sync_current_identity_runtime_history_from_source_auth_self_heals_provider_vi
     );
     assert_eq!(
         rollout_provider(&source_home.join("sessions/thread-a.jsonl")).as_deref(),
-        Some("modex-api-key")
+        Some("openai")
     );
 }
 
@@ -570,10 +570,7 @@ fn sync_current_identity_runtime_history_from_source_auth_preserves_identity_sel
     let api_auth = r#"{"auth_mode":"apikey","OPENAI_API_KEY":"sk-test"}"#;
     std::fs::write(source_home.join("auth.json"), api_auth).unwrap();
     std::fs::write(api_home.join("auth.json"), api_auth).unwrap();
-    create_threads_db(
-        &source_home.join("state_5.sqlite"),
-        &[("thread-a", "openai", "sessions/missing.jsonl", 0_i64)],
-    );
+    std::fs::write(source_home.join("state_5.sqlite"), "not-a-sqlite-db").unwrap();
     let mut settings = AppSettings::default_for_home(temp.path().to_path_buf());
     settings.source_home = source_home;
     settings.identities.push(AppIdentity {
@@ -590,7 +587,8 @@ fn sync_current_identity_runtime_history_from_source_auth_preserves_identity_sel
         .sync_current_identity_runtime_history_from_source_auth()
         .unwrap_err();
 
-    assert!(error.to_string().contains("missing.jsonl"));
+    let error_text = error.to_string().to_ascii_lowercase();
+    assert!(error_text.contains("database") || error_text.contains("sqlite"));
     assert_eq!(
         engine.settings().current_identity_name.as_deref(),
         Some("Gateway")
