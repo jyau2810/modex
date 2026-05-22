@@ -139,7 +139,7 @@ fn quota_unknown_and_errors_keep_visible_placeholder_labels() {
 }
 
 #[test]
-fn sync_identity_auth_replaces_only_source_auth_file() {
+fn switch_identity_replaces_only_source_auth_file() {
     let temp = assert_fs::TempDir::new().unwrap();
     let source = temp.child("source");
     let identity = temp.child("identity");

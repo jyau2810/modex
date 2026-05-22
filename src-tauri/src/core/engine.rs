@@ -17,7 +17,6 @@ use super::codex::{
 };
 use super::identity_home::{default_new_identity, random_digits};
 use super::quota::{quota_display, QuotaDisplay, QuotaSnapshot};
-use super::sync::{history_sync_provider_for_identity, sync_source_history_provider};
 use super::{ModexError, ModexResult};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -231,9 +230,6 @@ impl AppEngine {
         if let Some(existing_name) = self.identity_name_for_auth_home(&self.settings.source_home) {
             self.settings.current_identity_name = Some(existing_name.clone());
             self.save()?;
-            if let Err(error) = self.sync_source_home_history_for_identity_name(&existing_name) {
-                eprintln!("modex import history sync failed: {error}");
-            }
             let identity = self.identity(&existing_name)?;
             return Ok(ImportIdentityResult {
                 ok: true,
@@ -267,9 +263,6 @@ impl AppEngine {
         self.settings.has_completed_setup = true;
         self.settings.current_identity_name = Some(identity.name.clone());
         self.save()?;
-        if let Err(error) = self.sync_source_home_history_for_identity_name(&identity.name) {
-            eprintln!("modex import history sync failed: {error}");
-        }
         let view = self.identity_view(&identity);
         Ok(ImportIdentityResult {
             ok: true,
@@ -471,12 +464,6 @@ impl AppEngine {
         Ok(true)
     }
 
-    pub fn sync_current_identity_runtime_history_from_source_auth(&mut self) -> ModexResult<bool> {
-        let changed = self.sync_current_identity_from_source_auth()?;
-        let synced = self.sync_source_home_history_for_current_identity()?;
-        Ok(changed || synced)
-    }
-
     fn identity_view(&self, identity: &AppIdentity) -> IdentityView {
         let error = self.errors.get(&identity.name).map(String::as_str);
         let quota = self
@@ -549,22 +536,6 @@ impl AppEngine {
             .iter()
             .find(|identity| auth_identity_match_key(&identity.codex_home).as_deref() == Some(&key))
             .map(|identity| identity.name.clone())
-    }
-
-    fn sync_source_home_history_for_current_identity(&self) -> ModexResult<bool> {
-        let Some(name) = self.settings.current_identity_name.as_deref() else {
-            return Ok(false);
-        };
-        self.sync_source_home_history_for_identity_name(name)?;
-        Ok(true)
-    }
-
-    fn sync_source_home_history_for_identity_name(&self, name: &str) -> ModexResult<()> {
-        let identity = self.identity(name)?;
-        sync_source_history_provider(
-            &self.settings.source_home,
-            history_sync_provider_for_identity(&identity),
-        )
     }
 }
 
