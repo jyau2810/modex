@@ -15,7 +15,6 @@ use super::{ModexError, ModexResult};
 
 const DEFAULT_CODEX_APP_CLI: &str = "/Applications/Codex.app/Contents/Resources/codex";
 const MODEX_API_KEY_PROVIDER_ID: &str = "modex-api-key";
-const MODEX_API_KEY_PROVIDER_NAME: &str = "Modex API Key";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProgramInvocation {
@@ -141,17 +140,6 @@ pub fn apply_openai_base_url_config(codex_home: &Path, base_url: Option<&str>) -
             insert_at,
             format!("openai_base_url = \"{}\"", escape_config_value(&base_url)),
         );
-        if !lines.is_empty() && !lines.last().is_some_and(|line| line.trim().is_empty()) {
-            lines.push(String::new());
-        }
-        lines.extend([
-            format!("[model_providers.{MODEX_API_KEY_PROVIDER_ID}]"),
-            format!("name = \"{MODEX_API_KEY_PROVIDER_NAME}\""),
-            format!("base_url = \"{}\"", escape_config_value(&base_url)),
-            "wire_api = \"responses\"".to_string(),
-            "requires_openai_auth = true".to_string(),
-            "supports_websockets = false".to_string(),
-        ]);
     }
     let lines = tidy_config_lines(lines);
     let next = if lines.is_empty() {
