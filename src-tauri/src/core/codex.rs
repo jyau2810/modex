@@ -15,7 +15,6 @@ use super::{ModexError, ModexResult};
 
 const DEFAULT_CODEX_APP_CLI: &str = "/Applications/Codex.app/Contents/Resources/codex";
 const MODEX_API_KEY_PROVIDER_ID: &str = "modex-api-key";
-const MODEX_API_KEY_PROVIDER_NAME: &str = "Modex API Key";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProgramInvocation {
@@ -134,24 +133,13 @@ pub fn apply_openai_base_url_config(codex_home: &Path, base_url: Option<&str>) -
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(ToString::to_string);
-    let mut lines = strip_managed_api_key_provider_config(&existing, base_url.is_some());
+    let mut lines = strip_managed_api_key_provider_config(&existing);
     if let Some(base_url) = base_url {
         let insert_at = top_level_insert_index(&lines);
         lines.insert(
             insert_at,
-            format!("model_provider = \"{MODEX_API_KEY_PROVIDER_ID}\""),
+            format!("openai_base_url = \"{}\"", escape_config_value(&base_url)),
         );
-        if !lines.is_empty() && !lines.last().is_some_and(|line| line.trim().is_empty()) {
-            lines.push(String::new());
-        }
-        lines.extend([
-            format!("[model_providers.{MODEX_API_KEY_PROVIDER_ID}]"),
-            format!("name = \"{MODEX_API_KEY_PROVIDER_NAME}\""),
-            format!("base_url = \"{}\"", escape_config_value(&base_url)),
-            "wire_api = \"responses\"".to_string(),
-            "requires_openai_auth = true".to_string(),
-            "supports_websockets = false".to_string(),
-        ]);
     }
     let lines = tidy_config_lines(lines);
     let next = if lines.is_empty() {
@@ -163,10 +151,7 @@ pub fn apply_openai_base_url_config(codex_home: &Path, base_url: Option<&str>) -
     Ok(())
 }
 
-fn strip_managed_api_key_provider_config(
-    existing: &str,
-    remove_any_top_level_model_provider: bool,
-) -> Vec<String> {
+fn strip_managed_api_key_provider_config(existing: &str) -> Vec<String> {
     let mut lines = Vec::new();
     let mut before_first_table = true;
     let mut skipping_managed_provider = false;
@@ -185,10 +170,7 @@ fn strip_managed_api_key_provider_config(
         if skipping_managed_provider || is_openai_base_url_line(line) {
             continue;
         }
-        if before_first_table
-            && is_model_provider_line(line)
-            && (remove_any_top_level_model_provider || is_managed_model_provider_assignment(line))
-        {
+        if before_first_table && is_managed_model_provider_assignment(line) {
             continue;
         }
         lines.push(line.to_string());
@@ -237,10 +219,6 @@ fn is_managed_provider_table(trimmed: &str) -> bool {
         trimmed,
         "[model_providers.modex-api-key]" | "[model_providers.\"modex-api-key\"]"
     )
-}
-
-fn is_model_provider_line(line: &str) -> bool {
-    is_toml_key_line(line, "model_provider")
 }
 
 fn is_managed_model_provider_assignment(line: &str) -> bool {
