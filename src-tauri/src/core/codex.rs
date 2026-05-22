@@ -11,7 +11,10 @@ use tempfile::TempDir;
 use super::app_config::{AppIdentity, AppSettings};
 use super::auth::plan_label;
 use super::quota::{snapshot_from_rate_limits, QuotaSnapshot};
-use super::sync::{sync_identity_auth, sync_source_history_provider, HistorySyncProvider};
+use super::sync::{
+    history_sync_provider_for_identity, sync_identity_auth, sync_source_history_provider,
+    HistorySyncProvider,
+};
 use super::{ModexError, ModexResult};
 
 const DEFAULT_CODEX_APP_CLI: &str = "/Applications/Codex.app/Contents/Resources/codex";
@@ -176,7 +179,7 @@ fn prepare_identity_for_launch_with_operations(
     sync_history: impl FnOnce(&Path, HistorySyncProvider) -> ModexResult<()>,
 ) -> ModexResult<()> {
     let backup = RuntimeHomeBackup::capture(&settings.source_home)?;
-    let provider = HistorySyncProvider::from(&identity.auth_type);
+    let provider = history_sync_provider_for_identity(identity);
     let result = (|| {
         sync_auth(&settings.source_home, &identity.codex_home)?;
         apply_config(settings, identity)?;

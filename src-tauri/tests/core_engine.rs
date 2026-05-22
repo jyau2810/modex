@@ -559,6 +559,67 @@ fn sync_current_identity_runtime_history_from_source_auth_self_heals_provider_vi
 }
 
 #[test]
+fn sync_current_identity_runtime_history_from_source_auth_uses_openai_for_official_api_key() {
+    let temp = assert_fs::TempDir::new().unwrap();
+    let config = temp.child("config.json");
+    let source_home = temp.path().join("source");
+    let api_home = temp.path().join(".modex/api");
+    std::fs::create_dir_all(source_home.join("sessions")).unwrap();
+    std::fs::create_dir_all(&api_home).unwrap();
+    let api_auth = r#"{"auth_mode":"apikey","OPENAI_API_KEY":"sk-live"}"#;
+    std::fs::write(source_home.join("auth.json"), api_auth).unwrap();
+    std::fs::write(api_home.join("auth.json"), api_auth).unwrap();
+    std::fs::write(
+        source_home.join("sessions/thread-a.jsonl"),
+        format!(
+            "{}\n",
+            serde_json::json!({
+                "session_meta": {
+                    "payload": {
+                        "model_provider": "openai"
+                    }
+                }
+            })
+        ),
+    )
+    .unwrap();
+    create_threads_db(
+        &source_home.join("state_5.sqlite"),
+        &[(
+            "thread-a",
+            "modex-api-key",
+            "sessions/thread-a.jsonl",
+            0_i64,
+        )],
+    );
+    let mut settings = AppSettings::default_for_home(temp.path().to_path_buf());
+    settings.source_home = source_home.clone();
+    settings.identities.push(AppIdentity {
+        name: "Official Key".to_string(),
+        codex_home: api_home,
+        monitor: false,
+        workspace_id: None,
+        auth_type: IdentityAuthType::ApiKey,
+        api_base_url: None,
+    });
+    let mut engine = AppEngine::new(settings, config.path().to_path_buf());
+
+    let changed = engine
+        .sync_current_identity_runtime_history_from_source_auth()
+        .unwrap();
+
+    assert!(changed);
+    assert_eq!(
+        engine.settings().current_identity_name.as_deref(),
+        Some("Official Key")
+    );
+    assert_eq!(
+        thread_provider(&source_home.join("state_5.sqlite"), "thread-a"),
+        "openai"
+    );
+}
+
+#[test]
 fn sync_current_identity_runtime_history_from_source_auth_preserves_identity_selection_on_failure()
 {
     let temp = assert_fs::TempDir::new().unwrap();

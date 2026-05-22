@@ -8,7 +8,7 @@ use rusqlite::{params, params_from_iter, Connection, Transaction};
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::app_config::IdentityAuthType;
+use super::app_config::{AppIdentity, IdentityAuthType};
 use super::{ModexError, ModexResult};
 
 const STATE_DB_NAME: &str = "state_5.sqlite";
@@ -49,6 +49,19 @@ impl From<&IdentityAuthType> for HistorySyncProvider {
 impl From<IdentityAuthType> for HistorySyncProvider {
     fn from(value: IdentityAuthType) -> Self {
         Self::from(&value)
+    }
+}
+
+pub fn history_sync_provider_for_identity(identity: &AppIdentity) -> HistorySyncProvider {
+    match identity.auth_type {
+        IdentityAuthType::ChatGpt => HistorySyncProvider::OpenAi,
+        IdentityAuthType::ApiKey => identity
+            .api_base_url
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|_| HistorySyncProvider::ModexApiKey)
+            .unwrap_or(HistorySyncProvider::OpenAi),
     }
 }
 

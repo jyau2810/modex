@@ -177,6 +177,76 @@ fn prepare_identity_for_launch_syncs_api_key_auth_and_applies_base_url() {
 }
 
 #[test]
+fn prepare_identity_for_launch_keeps_official_api_key_history_on_openai_provider() {
+    let temp = assert_fs::TempDir::new().unwrap();
+    let source_home = temp.path().join("source");
+    let api_home = temp.path().join(".modex/api");
+    std::fs::create_dir_all(&source_home).unwrap();
+    std::fs::create_dir_all(&api_home).unwrap();
+    std::fs::create_dir_all(source_home.join("sessions")).unwrap();
+    std::fs::write(
+        source_home.join("config.toml"),
+        "model = \"gpt-5.2\"\nmodel_provider = \"modex-api-key\"\n\n[model_providers.modex-api-key]\nname = \"Modex API Key\"\nbase_url = \"https://gateway.example/v1\"\nwire_api = \"responses\"\nrequires_openai_auth = true\nsupports_websockets = false\n",
+    )
+    .unwrap();
+    std::fs::write(
+        api_home.join("auth.json"),
+        r#"{"auth_mode":"apikey","OPENAI_API_KEY":"sk-live"}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        source_home.join("sessions/thread-a.jsonl"),
+        format!(
+            "{}\n",
+            serde_json::json!({
+                "session_meta": {
+                    "payload": {
+                        "model_provider": "openai"
+                    }
+                }
+            })
+        ),
+    )
+    .unwrap();
+    create_threads_db(
+        &source_home.join("state_5.sqlite"),
+        &[(
+            "thread-a",
+            "modex-api-key",
+            "sessions/thread-a.jsonl",
+            0_i64,
+        )],
+    );
+
+    let mut settings = AppSettings::default_for_home(temp.path().to_path_buf());
+    settings.source_home = source_home.clone();
+    let identity = AppIdentity {
+        name: "Official Key".to_string(),
+        codex_home: api_home,
+        monitor: false,
+        workspace_id: None,
+        auth_type: IdentityAuthType::ApiKey,
+        api_base_url: None,
+    };
+
+    prepare_identity_for_launch(&settings, &identity).unwrap();
+
+    assert_eq!(
+        std::fs::read_to_string(source_home.join("config.toml")).unwrap(),
+        "model = \"gpt-5.2\"\n"
+    );
+    let connection = Connection::open(source_home.join("state_5.sqlite")).unwrap();
+    let provider: String = connection
+        .query_row(
+            "SELECT model_provider FROM threads WHERE id = 'thread-a'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(provider, "openai");
+}
+
+#[test]
 fn prepare_identity_for_launch_rolls_back_runtime_files_when_history_sync_fails() {
     let temp = assert_fs::TempDir::new().unwrap();
     let source_home = temp.path().join("source");

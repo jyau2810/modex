@@ -17,7 +17,7 @@ use super::codex::{
 };
 use super::identity_home::{default_new_identity, random_digits};
 use super::quota::{quota_display, QuotaDisplay, QuotaSnapshot};
-use super::sync::{sync_source_history_provider, HistorySyncProvider};
+use super::sync::{history_sync_provider_for_identity, sync_source_history_provider};
 use super::{ModexError, ModexResult};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -563,7 +563,7 @@ impl AppEngine {
         let identity = self.identity(name)?;
         sync_source_history_provider(
             &self.settings.source_home,
-            HistorySyncProvider::from(&identity.auth_type),
+            history_sync_provider_for_identity(&identity),
         )
     }
 }
