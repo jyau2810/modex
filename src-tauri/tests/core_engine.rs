@@ -5,6 +5,7 @@ use modex_lib::core::app_config::{
     load_app_settings_from_path, AppIdentity, AppSettings, IdentityAuthType,
 };
 use modex_lib::core::engine::{AppEngine, SettingsPatch};
+use rusqlite::{params, Connection};
 
 fn jwt_with_claims(claims: serde_json::Value) -> String {
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -342,6 +343,69 @@ fn import_current_identity_reuses_existing_matching_account() {
 }
 
 #[test]
+fn import_current_identity_self_heals_history_view_for_existing_api_key_account() {
+    let temp = assert_fs::TempDir::new().unwrap();
+    let config = temp.child("config.json");
+    let source_home = temp.path().join("source");
+    let existing_home = temp.path().join(".modex/111111111111");
+    std::fs::create_dir_all(source_home.join("sessions")).unwrap();
+    std::fs::create_dir_all(&existing_home).unwrap();
+    let api_auth = r#"{"auth_mode":"apikey","OPENAI_API_KEY":"sk-test"}"#;
+    std::fs::write(source_home.join("auth.json"), api_auth).unwrap();
+    std::fs::write(existing_home.join("auth.json"), api_auth).unwrap();
+    std::fs::write(
+        source_home.join("sessions/thread-a.jsonl"),
+        format!(
+            "{}\n",
+            serde_json::json!({
+                "session_meta": {
+                    "payload": {
+                        "model_provider": "openai"
+                    }
+                }
+            })
+        ),
+    )
+    .unwrap();
+    create_threads_db(
+        &source_home.join("state_5.sqlite"),
+        &[("thread-a", "openai", "sessions/thread-a.jsonl", 0_i64)],
+    );
+    let mut settings = AppSettings::default_for_home(temp.path().to_path_buf());
+    settings.source_home = source_home.clone();
+    settings.identities.push(AppIdentity {
+        name: "Gateway".to_string(),
+        codex_home: existing_home.clone(),
+        monitor: false,
+        workspace_id: None,
+        auth_type: IdentityAuthType::ApiKey,
+        api_base_url: Some("https://gateway.example/v1".to_string()),
+    });
+    let mut engine = AppEngine::new(settings, config.path().to_path_buf());
+
+    let result = engine
+        .import_current_identity_with_digits(|| "222222222222".to_string())
+        .unwrap();
+
+    assert!(result.ok);
+    assert!(!result.imported);
+    assert_eq!(result.identity.unwrap().name, "Gateway");
+    assert_eq!(
+        engine.settings().current_identity_name.as_deref(),
+        Some("Gateway")
+    );
+    assert!(!temp.path().join(".modex/222222222222").exists());
+    assert_eq!(
+        thread_provider(&source_home.join("state_5.sqlite"), "thread-a"),
+        "modex-api-key"
+    );
+    assert_eq!(
+        rollout_provider(&source_home.join("sessions/thread-a.jsonl")).as_deref(),
+        Some("modex-api-key")
+    );
+}
+
+#[test]
 fn import_current_identity_marks_new_import_as_current_even_when_accounts_exist() {
     let temp = assert_fs::TempDir::new().unwrap();
     let config = temp.child("config.json");
@@ -432,6 +496,174 @@ fn import_current_identity_with_unparseable_auth_uses_fallback_account_name() {
     assert!(result.imported);
     assert_eq!(result.identity.unwrap().name, "账号");
     assert_eq!(engine.settings().identities[0].name, "账号");
+}
+
+#[test]
+fn sync_current_identity_runtime_history_from_source_auth_self_heals_provider_view() {
+    let temp = assert_fs::TempDir::new().unwrap();
+    let config = temp.child("config.json");
+    let source_home = temp.path().join("source");
+    let api_home = temp.path().join(".modex/api");
+    std::fs::create_dir_all(source_home.join("sessions")).unwrap();
+    std::fs::create_dir_all(&api_home).unwrap();
+    let api_auth = r#"{"auth_mode":"apikey","OPENAI_API_KEY":"sk-test"}"#;
+    std::fs::write(source_home.join("auth.json"), api_auth).unwrap();
+    std::fs::write(api_home.join("auth.json"), api_auth).unwrap();
+    std::fs::write(
+        source_home.join("sessions/thread-a.jsonl"),
+        format!(
+            "{}\n",
+            serde_json::json!({
+                "session_meta": {
+                    "payload": {
+                        "model_provider": "openai"
+                    }
+                }
+            })
+        ),
+    )
+    .unwrap();
+    create_threads_db(
+        &source_home.join("state_5.sqlite"),
+        &[("thread-a", "openai", "sessions/thread-a.jsonl", 0_i64)],
+    );
+    let mut settings = AppSettings::default_for_home(temp.path().to_path_buf());
+    settings.source_home = source_home.clone();
+    settings.identities.push(AppIdentity {
+        name: "Gateway".to_string(),
+        codex_home: api_home,
+        monitor: false,
+        workspace_id: None,
+        auth_type: IdentityAuthType::ApiKey,
+        api_base_url: Some("https://gateway.example/v1".to_string()),
+    });
+    let mut engine = AppEngine::new(settings, config.path().to_path_buf());
+
+    let changed = engine
+        .sync_current_identity_runtime_history_from_source_auth()
+        .unwrap();
+
+    assert!(changed);
+    assert_eq!(
+        engine.settings().current_identity_name.as_deref(),
+        Some("Gateway")
+    );
+    assert_eq!(
+        thread_provider(&source_home.join("state_5.sqlite"), "thread-a"),
+        "modex-api-key"
+    );
+    assert_eq!(
+        rollout_provider(&source_home.join("sessions/thread-a.jsonl")).as_deref(),
+        Some("modex-api-key")
+    );
+}
+
+#[test]
+fn sync_current_identity_runtime_history_from_source_auth_preserves_identity_selection_on_failure()
+{
+    let temp = assert_fs::TempDir::new().unwrap();
+    let config = temp.child("config.json");
+    let source_home = temp.path().join("source");
+    let api_home = temp.path().join(".modex/api");
+    std::fs::create_dir_all(&source_home).unwrap();
+    std::fs::create_dir_all(&api_home).unwrap();
+    let api_auth = r#"{"auth_mode":"apikey","OPENAI_API_KEY":"sk-test"}"#;
+    std::fs::write(source_home.join("auth.json"), api_auth).unwrap();
+    std::fs::write(api_home.join("auth.json"), api_auth).unwrap();
+    create_threads_db(
+        &source_home.join("state_5.sqlite"),
+        &[("thread-a", "openai", "sessions/missing.jsonl", 0_i64)],
+    );
+    let mut settings = AppSettings::default_for_home(temp.path().to_path_buf());
+    settings.source_home = source_home;
+    settings.identities.push(AppIdentity {
+        name: "Gateway".to_string(),
+        codex_home: api_home,
+        monitor: false,
+        workspace_id: None,
+        auth_type: IdentityAuthType::ApiKey,
+        api_base_url: Some("https://gateway.example/v1".to_string()),
+    });
+    let mut engine = AppEngine::new(settings, config.path().to_path_buf());
+
+    let error = engine
+        .sync_current_identity_runtime_history_from_source_auth()
+        .unwrap_err();
+
+    assert!(error.to_string().contains("missing.jsonl"));
+    assert_eq!(
+        engine.settings().current_identity_name.as_deref(),
+        Some("Gateway")
+    );
+}
+
+fn create_threads_db(path: &std::path::Path, rows: &[(&str, &str, &str, i64)]) {
+    let connection = Connection::open(path).unwrap();
+    connection
+        .execute_batch(
+            "CREATE TABLE threads (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                cwd TEXT,
+                rollout_path TEXT NOT NULL,
+                model_provider TEXT,
+                archived INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER,
+                updated_at INTEGER
+            );",
+        )
+        .unwrap();
+    for (id, provider, rollout_path, archived) in rows {
+        connection
+            .execute(
+                "INSERT INTO threads (
+                    id,
+                    title,
+                    cwd,
+                    rollout_path,
+                    model_provider,
+                    archived,
+                    created_at,
+                    updated_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1710000000, 1710000000)",
+                params![
+                    id,
+                    format!("Thread {id}"),
+                    format!("/tmp/{id}"),
+                    rollout_path,
+                    provider,
+                    archived
+                ],
+            )
+            .unwrap();
+    }
+}
+
+fn thread_provider(path: &std::path::Path, thread_id: &str) -> String {
+    let connection = Connection::open(path).unwrap();
+    connection
+        .query_row(
+            "SELECT model_provider FROM threads WHERE id = ?1",
+            [thread_id],
+            |row| row.get(0),
+        )
+        .unwrap()
+}
+
+fn rollout_provider(path: &std::path::Path) -> Option<String> {
+    let first_line = std::fs::read_to_string(path)
+        .unwrap()
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .to_string();
+    let payload: serde_json::Value = serde_json::from_str(&first_line).unwrap();
+    payload
+        .get("session_meta")
+        .and_then(|value| value.get("payload"))
+        .and_then(|value| value.get("model_provider"))
+        .and_then(serde_json::Value::as_str)
+        .map(ToString::to_string)
 }
 
 #[test]

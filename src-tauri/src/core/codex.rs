@@ -1,3 +1,4 @@
+use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -10,7 +11,10 @@ use tempfile::TempDir;
 use super::app_config::{AppIdentity, AppSettings};
 use super::auth::plan_label;
 use super::quota::{snapshot_from_rate_limits, QuotaSnapshot};
-use super::sync::sync_identity_auth;
+use super::sync::{
+    source_history_rollout_paths, sync_identity_auth, sync_source_history_provider,
+    HistorySyncProvider,
+};
 use super::{ModexError, ModexResult};
 
 const DEFAULT_CODEX_APP_CLI: &str = "/Applications/Codex.app/Contents/Resources/codex";
@@ -90,7 +94,7 @@ pub fn open_codex_app(settings: &AppSettings, identity: &AppIdentity) -> ModexRe
         settings,
         identity,
         quit_codex_app_if_running,
-        sync_identity_auth,
+        prepare_identity_for_launch,
         spawn_program,
     )
 }
@@ -99,15 +103,14 @@ fn open_codex_app_with_operations(
     settings: &AppSettings,
     identity: &AppIdentity,
     quit: impl FnOnce(&AppSettings) -> ModexResult<()>,
-    sync: impl FnOnce(&Path, &Path) -> ModexResult<PathBuf>,
+    prepare: impl FnOnce(&AppSettings, &AppIdentity) -> ModexResult<()>,
     launch: impl FnOnce(ProgramInvocation) -> ModexResult<()>,
 ) -> ModexResult<()> {
     #[cfg(target_os = "macos")]
     quit(settings)?;
     #[cfg(not(target_os = "macos"))]
     let _ = quit;
-    sync(&settings.source_home, &identity.codex_home)?;
-    apply_identity_runtime_config(settings, identity)?;
+    prepare(settings, identity)?;
     launch(open_codex_app_launch_command(settings))
 }
 
@@ -115,8 +118,13 @@ pub fn prepare_identity_for_launch(
     settings: &AppSettings,
     identity: &AppIdentity,
 ) -> ModexResult<()> {
-    sync_identity_auth(&settings.source_home, &identity.codex_home)?;
-    apply_identity_runtime_config(settings, identity)
+    prepare_identity_for_launch_with_operations(
+        settings,
+        identity,
+        sync_identity_auth,
+        apply_identity_runtime_config,
+        sync_source_history_provider,
+    )
 }
 
 pub fn apply_identity_runtime_config(
@@ -127,9 +135,9 @@ pub fn apply_identity_runtime_config(
 }
 
 pub fn apply_openai_base_url_config(codex_home: &Path, base_url: Option<&str>) -> ModexResult<()> {
-    std::fs::create_dir_all(codex_home)?;
+    fs::create_dir_all(codex_home)?;
     let config_path = codex_home.join("config.toml");
-    let existing = std::fs::read_to_string(&config_path).unwrap_or_default();
+    let existing = fs::read_to_string(&config_path).unwrap_or_default();
     let base_url = base_url
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -159,8 +167,122 @@ pub fn apply_openai_base_url_config(codex_home: &Path, base_url: Option<&str>) -
     } else {
         format!("{}\n", lines.join("\n"))
     };
-    std::fs::write(config_path, next)?;
+    fs::write(config_path, next)?;
     Ok(())
+}
+
+fn prepare_identity_for_launch_with_operations(
+    settings: &AppSettings,
+    identity: &AppIdentity,
+    sync_auth: impl FnOnce(&Path, &Path) -> ModexResult<PathBuf>,
+    apply_config: impl FnOnce(&AppSettings, &AppIdentity) -> ModexResult<()>,
+    sync_history: impl FnOnce(&Path, HistorySyncProvider) -> ModexResult<()>,
+) -> ModexResult<()> {
+    let backup = RuntimeHomeBackup::capture(&settings.source_home)?;
+    let provider = HistorySyncProvider::from(&identity.auth_type);
+    let result = (|| {
+        sync_auth(&settings.source_home, &identity.codex_home)?;
+        apply_config(settings, identity)?;
+        sync_history(&settings.source_home, provider)
+    })();
+    match result {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            if let Err(restore_error) = backup.restore() {
+                return Err(ModexError::from(format!(
+                    "{error}; 且运行时目录回滚失败：{restore_error}"
+                )));
+            }
+            Err(error)
+        }
+    }
+}
+
+struct RuntimeHomeBackup {
+    snapshots: Vec<FileSnapshot>,
+    temp_dir: TempDir,
+}
+
+impl RuntimeHomeBackup {
+    fn capture(source_home: &Path) -> ModexResult<Self> {
+        let mut tracked_paths = vec![
+            source_home.join("auth.json"),
+            source_home.join("config.toml"),
+            source_home.join("state_5.sqlite"),
+            source_home.join("state_5.sqlite-wal"),
+            source_home.join("state_5.sqlite-shm"),
+        ];
+        tracked_paths.extend(source_history_rollout_paths(source_home)?);
+        tracked_paths.sort();
+        tracked_paths.dedup();
+
+        let temp_dir = TempDir::new()?;
+        let mut snapshots = Vec::with_capacity(tracked_paths.len());
+        for path in tracked_paths {
+            snapshots.push(FileSnapshot::capture(temp_dir.path(), path)?);
+        }
+
+        Ok(Self {
+            snapshots,
+            temp_dir,
+        })
+    }
+
+    fn restore(self) -> ModexResult<()> {
+        let _ = self.temp_dir.path();
+        for snapshot in self.snapshots {
+            snapshot.restore()?;
+        }
+        Ok(())
+    }
+}
+
+struct FileSnapshot {
+    original_path: PathBuf,
+    backup_path: PathBuf,
+    existed: bool,
+}
+
+impl FileSnapshot {
+    fn capture(backup_root: &Path, original_path: PathBuf) -> ModexResult<Self> {
+        let sanitized = original_path
+            .to_string_lossy()
+            .replace('/', "__")
+            .replace(':', "_");
+        let backup_path = backup_root.join(sanitized);
+        let existed = original_path.exists();
+        if existed {
+            fs::copy(&original_path, &backup_path)?;
+        }
+        Ok(Self {
+            original_path,
+            backup_path,
+            existed,
+        })
+    }
+
+    fn restore(self) -> ModexResult<()> {
+        if self.existed {
+            if let Some(parent) = self.original_path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            let temporary = self.original_path.with_file_name(format!(
+                "{}.modex-restore",
+                self.original_path
+                    .file_name()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or("restore")
+            ));
+            fs::copy(&self.backup_path, &temporary)?;
+            if let Ok(metadata) = fs::metadata(&self.original_path) {
+                let _ = fs::set_permissions(&temporary, metadata.permissions());
+            }
+            fs::rename(temporary, &self.original_path)?;
+        } else if self.original_path.exists() {
+            fs::remove_file(&self.original_path)?;
+        }
+        Ok(())
+    }
 }
 
 fn strip_managed_api_key_provider_config(
@@ -602,9 +724,9 @@ mod tests {
                 events.borrow_mut().push("quit");
                 Err(ModexError::from("quit canceled"))
             },
-            |_source, _identity| {
-                events.borrow_mut().push("sync");
-                Ok(PathBuf::from("/tmp/modex-test/source/auth.json"))
+            |_settings, _identity| {
+                events.borrow_mut().push("prepare");
+                Ok(())
             },
             |_invocation| {
                 events.borrow_mut().push("launch");
@@ -629,9 +751,9 @@ mod tests {
                 events.borrow_mut().push("quit");
                 Ok(())
             },
-            |_source, _identity| {
-                events.borrow_mut().push("sync");
-                Ok(PathBuf::from("/tmp/modex-test/source/auth.json"))
+            |_settings, _identity| {
+                events.borrow_mut().push("prepare");
+                Ok(())
             },
             |_invocation| {
                 events.borrow_mut().push("launch");
@@ -640,7 +762,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(events.into_inner(), vec!["quit", "sync", "launch"]);
+        assert_eq!(events.into_inner(), vec!["quit", "prepare", "launch"]);
     }
 
     fn identity_at(path: &str) -> AppIdentity {

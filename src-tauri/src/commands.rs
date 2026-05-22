@@ -480,6 +480,21 @@ pub fn start_refresh_all_with_events(app: AppHandle, source: &'static str) {
             let _ = refresh_tray(&app);
             return;
         };
+        if source == "startup" {
+            let history_sync = state
+                .engine
+                .lock()
+                .map_err(|_| "Modex state lock poisoned".to_string())
+                .and_then(|mut engine| {
+                    engine
+                        .sync_current_identity_runtime_history_from_source_auth()
+                        .map(|_| ())
+                        .map_err(|error| error.to_string())
+                });
+            if let Err(error) = history_sync {
+                eprintln!("modex startup history sync failed: {error}");
+            }
+        }
         let before = current_identity_views(&state).unwrap_or_default();
 
         emit_refresh_started(&app);

@@ -19,6 +19,8 @@ pub enum ModexError {
     Io(#[from] std::io::Error),
     #[error(transparent)]
     Json(#[from] serde_json::Error),
+    #[error(transparent)]
+    Sqlite(#[from] rusqlite::Error),
 }
 
 impl From<&str> for ModexError {
