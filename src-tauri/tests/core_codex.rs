@@ -77,7 +77,7 @@ fn account_display_name_uses_chatgpt_email_and_ignores_api_key_accounts() {
 }
 
 #[test]
-fn apply_openai_base_url_config_sets_or_removes_base_url_without_switching_provider() {
+fn apply_openai_base_url_config_sets_or_removes_managed_provider() {
     let temp = assert_fs::TempDir::new().unwrap();
     let config = temp.child("config.toml");
     config
@@ -89,7 +89,7 @@ fn apply_openai_base_url_config_sets_or_removes_base_url_without_switching_provi
     apply_openai_base_url_config(temp.path(), Some("https://sub2api.flatincbr.com")).unwrap();
     assert_eq!(
         std::fs::read_to_string(config.path()).unwrap(),
-        "model = \"gpt-5.2\"\nopenai_base_url = \"https://sub2api.flatincbr.com\"\n\n[projects.\"/tmp/project\"]\ntrust_level = \"trusted\"\n\n[mcp_servers.test]\ncommand = \"test\"\n"
+        "model = \"gpt-5.2\"\nmodel_provider = \"modex-api-key\"\n\n[projects.\"/tmp/project\"]\ntrust_level = \"trusted\"\n\n[mcp_servers.test]\ncommand = \"test\"\n\n[model_providers.modex-api-key]\nname = \"Modex API Key\"\nbase_url = \"https://sub2api.flatincbr.com\"\nwire_api = \"responses\"\nrequires_openai_auth = true\nsupports_websockets = false\n"
     );
 
     apply_openai_base_url_config(temp.path(), None).unwrap();
@@ -132,7 +132,7 @@ fn prepare_identity_for_launch_syncs_api_key_auth_and_applies_base_url() {
     );
     assert_eq!(
         std::fs::read_to_string(source_home.join("config.toml")).unwrap(),
-        "model = \"gpt-5.2\"\nopenai_base_url = \"https://gateway.example/v1\"\n"
+        "model = \"gpt-5.2\"\nmodel_provider = \"modex-api-key\"\n\n[model_providers.modex-api-key]\nname = \"Modex API Key\"\nbase_url = \"https://gateway.example/v1\"\nwire_api = \"responses\"\nrequires_openai_auth = true\nsupports_websockets = false\n"
     );
 }
 
