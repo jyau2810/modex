@@ -3,7 +3,7 @@ use modex_lib::core::app_config::{AppIdentity, AppSettings, IdentityAuthType};
 use modex_lib::core::codex::{
     account_display_name_from_response, api_key_login_invocation, apply_openai_base_url_config,
     open_codex_app_launch_command, prepare_identity_for_launch, resolve_codex_binary_with,
-    ProgramInvocation,
+    sync_plugin_registration_config, ProgramInvocation,
 };
 
 #[cfg(target_os = "macos")]
@@ -133,6 +133,61 @@ fn prepare_identity_for_launch_syncs_api_key_auth_and_applies_base_url() {
     assert_eq!(
         std::fs::read_to_string(source_home.join("config.toml")).unwrap(),
         "model = \"gpt-5.2\"\nmodel_provider = \"modex-api-key\"\n\n[model_providers.modex-api-key]\nname = \"Modex API Key\"\nbase_url = \"https://gateway.example/v1\"\nwire_api = \"responses\"\nrequires_openai_auth = true\nsupports_websockets = false\n"
+    );
+}
+
+#[test]
+fn sync_plugin_registration_config_merges_plugin_and_marketplace_tables_both_ways() {
+    let temp = assert_fs::TempDir::new().unwrap();
+    let source_home = temp.path().join("source");
+    let identity_home = temp.path().join(".modex/team");
+    std::fs::create_dir_all(&source_home).unwrap();
+    std::fs::create_dir_all(&identity_home).unwrap();
+    std::fs::write(
+        source_home.join("config.toml"),
+        "model = \"gpt-5.2\"\n\n[plugins.\"browser@openai-bundled\"]\nenabled = true\n\n[marketplaces.openai-bundled]\nsource_type = \"local\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        identity_home.join("config.toml"),
+        "model = \"identity-local\"\n\n[plugins.\"publish-plugin-to-market@keystone-plugins\"]\nenabled = true\n\n[marketplaces.keystone-plugins]\nsource_type = \"git\"\n",
+    )
+    .unwrap();
+
+    sync_plugin_registration_config(&source_home, &identity_home).unwrap();
+
+    assert_eq!(
+        std::fs::read_to_string(source_home.join("config.toml")).unwrap(),
+        "model = \"gpt-5.2\"\n\n[plugins.\"browser@openai-bundled\"]\nenabled = true\n\n[marketplaces.openai-bundled]\nsource_type = \"local\"\n\n[plugins.\"publish-plugin-to-market@keystone-plugins\"]\nenabled = true\n\n[marketplaces.keystone-plugins]\nsource_type = \"git\"\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(identity_home.join("config.toml")).unwrap(),
+        "model = \"identity-local\"\n\n[plugins.\"publish-plugin-to-market@keystone-plugins\"]\nenabled = true\n\n[marketplaces.keystone-plugins]\nsource_type = \"git\"\n\n[plugins.\"browser@openai-bundled\"]\nenabled = true\n\n[marketplaces.openai-bundled]\nsource_type = \"local\"\n"
+    );
+}
+
+#[test]
+fn sync_plugin_registration_config_leaves_non_plugin_config_alone_when_identity_has_no_config() {
+    let temp = assert_fs::TempDir::new().unwrap();
+    let source_home = temp.path().join("source");
+    let identity_home = temp.path().join(".modex/team");
+    std::fs::create_dir_all(&source_home).unwrap();
+    std::fs::create_dir_all(&identity_home).unwrap();
+    std::fs::write(
+        source_home.join("config.toml"),
+        "model = \"gpt-5.2\"\n\n[projects.\"/tmp/project\"]\ntrust_level = \"trusted\"\n\n[plugins.\"browser@openai-bundled\"]\nenabled = true\n",
+    )
+    .unwrap();
+
+    sync_plugin_registration_config(&source_home, &identity_home).unwrap();
+
+    assert_eq!(
+        std::fs::read_to_string(source_home.join("config.toml")).unwrap(),
+        "model = \"gpt-5.2\"\n\n[projects.\"/tmp/project\"]\ntrust_level = \"trusted\"\n\n[plugins.\"browser@openai-bundled\"]\nenabled = true\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(identity_home.join("config.toml")).unwrap(),
+        "[plugins.\"browser@openai-bundled\"]\nenabled = true\n"
     );
 }
 

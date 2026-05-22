@@ -107,6 +107,7 @@ fn open_codex_app_with_operations(
     #[cfg(not(target_os = "macos"))]
     let _ = quit;
     sync(&settings.source_home, &identity.codex_home)?;
+    sync_plugin_registration_config(&settings.source_home, &identity.codex_home)?;
     apply_identity_runtime_config(settings, identity)?;
     launch(open_codex_app_launch_command(settings))
 }
@@ -116,6 +117,7 @@ pub fn prepare_identity_for_launch(
     identity: &AppIdentity,
 ) -> ModexResult<()> {
     sync_identity_auth(&settings.source_home, &identity.codex_home)?;
+    sync_plugin_registration_config(&settings.source_home, &identity.codex_home)?;
     apply_identity_runtime_config(settings, identity)
 }
 
@@ -124,6 +126,32 @@ pub fn apply_identity_runtime_config(
     identity: &AppIdentity,
 ) -> ModexResult<()> {
     apply_openai_base_url_config(&settings.source_home, identity.api_base_url.as_deref())
+}
+
+pub fn sync_plugin_registration_config(
+    source_home: &Path,
+    identity_home: &Path,
+) -> ModexResult<()> {
+    let source_config = source_home.join("config.toml");
+    let identity_config = identity_home.join("config.toml");
+    let source_existing = std::fs::read_to_string(&source_config).unwrap_or_default();
+    let identity_existing = std::fs::read_to_string(&identity_config).unwrap_or_default();
+    let source_sections = plugin_registration_sections(&source_existing);
+    let identity_sections = plugin_registration_sections(&identity_existing);
+
+    let next_source = merge_missing_plugin_sections(&source_existing, &identity_sections);
+    if next_source != source_existing {
+        std::fs::create_dir_all(source_home)?;
+        std::fs::write(&source_config, next_source)?;
+    }
+
+    let next_identity = merge_missing_plugin_sections(&identity_existing, &source_sections);
+    if next_identity != identity_existing {
+        std::fs::create_dir_all(identity_home)?;
+        std::fs::write(&identity_config, next_identity)?;
+    }
+
+    Ok(())
 }
 
 pub fn apply_openai_base_url_config(codex_home: &Path, base_url: Option<&str>) -> ModexResult<()> {
@@ -230,6 +258,89 @@ fn tidy_config_lines(lines: Vec<String>) -> Vec<String> {
 
 fn is_table_header(trimmed: &str) -> bool {
     trimmed.starts_with('[') && trimmed.ends_with(']')
+}
+
+#[derive(Clone, Debug)]
+struct ConfigTableSection {
+    header: String,
+    lines: Vec<String>,
+}
+
+fn plugin_registration_sections(existing: &str) -> Vec<ConfigTableSection> {
+    let mut sections = Vec::new();
+    let mut current_header: Option<String> = None;
+    let mut current_lines: Vec<String> = Vec::new();
+
+    for line in existing.lines() {
+        let trimmed = line.trim();
+        if is_table_header(trimmed) {
+            if let Some(header) = current_header.take() {
+                sections.push(ConfigTableSection {
+                    header,
+                    lines: trim_trailing_blank_lines(current_lines),
+                });
+                current_lines = Vec::new();
+            }
+            if is_plugin_registration_table(trimmed) {
+                current_header = Some(trimmed.to_string());
+                current_lines.push(line.to_string());
+            }
+            continue;
+        }
+        if current_header.is_some() {
+            current_lines.push(line.to_string());
+        }
+    }
+
+    if let Some(header) = current_header {
+        sections.push(ConfigTableSection {
+            header,
+            lines: trim_trailing_blank_lines(current_lines),
+        });
+    }
+
+    sections
+}
+
+fn merge_missing_plugin_sections(existing: &str, incoming: &[ConfigTableSection]) -> String {
+    let mut lines = existing
+        .lines()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    let mut existing_headers = plugin_registration_sections(existing)
+        .into_iter()
+        .map(|section| section.header)
+        .collect::<std::collections::HashSet<_>>();
+
+    for section in incoming {
+        if !existing_headers.insert(section.header.clone()) {
+            continue;
+        }
+        while lines.last().is_some_and(|line| line.trim().is_empty()) {
+            lines.pop();
+        }
+        if !lines.is_empty() {
+            lines.push(String::new());
+        }
+        lines.extend(section.lines.clone());
+    }
+
+    if lines.is_empty() {
+        String::new()
+    } else {
+        format!("{}\n", lines.join("\n"))
+    }
+}
+
+fn trim_trailing_blank_lines(mut lines: Vec<String>) -> Vec<String> {
+    while lines.last().is_some_and(|line| line.trim().is_empty()) {
+        lines.pop();
+    }
+    lines
+}
+
+fn is_plugin_registration_table(trimmed: &str) -> bool {
+    trimmed.starts_with("[plugins.") || trimmed.starts_with("[marketplaces.")
 }
 
 fn is_managed_provider_table(trimmed: &str) -> bool {
