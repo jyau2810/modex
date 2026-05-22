@@ -154,7 +154,10 @@ fn sync_source_history_provider_does_not_touch_current_rollout_session_meta_form
         rollout_provider(archived_rollout.path()).as_deref(),
         Some("openai")
     );
-    assert_eq!(fs::read_to_string(archived_rollout.path()).unwrap(), original_rollout);
+    assert_eq!(
+        fs::read_to_string(archived_rollout.path()).unwrap(),
+        original_rollout
+    );
     assert_eq!(
         thread_rows(state_path.path()),
         vec![(
@@ -163,6 +166,177 @@ fn sync_source_history_provider_does_not_touch_current_rollout_session_meta_form
             1,
             "archived_sessions/project-current.jsonl".to_string()
         )]
+    );
+}
+
+#[test]
+fn sync_source_history_provider_backfills_missing_threads_from_index_and_rollouts() {
+    let temp = assert_fs::TempDir::new().unwrap();
+    let source_home = temp.child("source");
+    source_home.create_dir_all().unwrap();
+    let state_path = source_home.child("state_5.sqlite");
+    let sessions_path = source_home.child("sessions");
+    let archived_sessions_path = source_home.child("archived_sessions");
+    sessions_path.create_dir_all().unwrap();
+    archived_sessions_path.create_dir_all().unwrap();
+
+    source_home
+        .child("session_index.jsonl")
+        .write_str(
+            &[
+                serde_json::json!({
+                    "id": "thread-open",
+                    "thread_name": "Open Thread",
+                    "updated_at": "2026-03-23T07:03:06.03388Z"
+                })
+                .to_string(),
+                serde_json::json!({
+                    "id": "thread-archived",
+                    "thread_name": "Archived Thread",
+                    "updated_at": "2026-03-24T12:43:25.419285Z"
+                })
+                .to_string(),
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+
+    let primary_rollout = sessions_path.child("project-a.jsonl");
+    primary_rollout
+        .write_str(&rollout_jsonl(
+            "openai",
+            "thread-open",
+            false,
+            "/tmp/project-a",
+        ))
+        .unwrap();
+    let archived_rollout =
+        archived_sessions_path.child("rollout-2026-03-23T15-02-25-thread-archived.jsonl");
+    archived_rollout
+        .write_str(&current_rollout_jsonl(
+            "openai",
+            "thread-archived",
+            true,
+            "/tmp/project-b",
+        ))
+        .unwrap();
+
+    create_threads_db(
+        state_path.path(),
+        &[thread_row(
+            "thread-open",
+            "openai",
+            "sessions/project-a.jsonl",
+            false,
+        )],
+    );
+
+    sync_source_history_provider(source_home.path(), HistorySyncProvider::ModexApiKey).unwrap();
+
+    assert_eq!(
+        thread_rows(state_path.path()),
+        vec![
+            (
+                "thread-archived".to_string(),
+                "modex-api-key".to_string(),
+                1,
+                archived_rollout.path().display().to_string()
+            ),
+            (
+                "thread-open".to_string(),
+                "modex-api-key".to_string(),
+                0,
+                "sessions/project-a.jsonl".to_string()
+            ),
+        ]
+    );
+    assert_eq!(
+        thread_detail(state_path.path(), "thread-archived"),
+        Some((
+            "Archived Thread".to_string(),
+            "/tmp/project-b".to_string(),
+            1
+        ))
+    );
+    assert_eq!(
+        rollout_provider(archived_rollout.path()).as_deref(),
+        Some("openai")
+    );
+
+    sync_source_history_provider(source_home.path(), HistorySyncProvider::OpenAi).unwrap();
+
+    assert_eq!(
+        thread_rows(state_path.path()),
+        vec![
+            (
+                "thread-archived".to_string(),
+                "openai".to_string(),
+                1,
+                archived_rollout.path().display().to_string()
+            ),
+            (
+                "thread-open".to_string(),
+                "openai".to_string(),
+                0,
+                "sessions/project-a.jsonl".to_string()
+            ),
+        ]
+    );
+}
+
+#[test]
+fn sync_source_history_provider_tolerates_rollout_without_session_meta() {
+    let temp = assert_fs::TempDir::new().unwrap();
+    let source_home = temp.child("source");
+    source_home.create_dir_all().unwrap();
+    let state_path = source_home.child("state_5.sqlite");
+    let archived_sessions_path = source_home.child("archived_sessions");
+    archived_sessions_path.create_dir_all().unwrap();
+
+    let thread_id = "019d1980-81b0-7000-b79d-50bceafac9bc";
+    source_home
+        .child("session_index.jsonl")
+        .write_str(
+            &serde_json::json!({
+                "id": thread_id,
+                "thread_name": "Recovered From Index",
+                "updated_at": "2026-03-23T07:03:06.03388Z"
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+    let archived_rollout =
+        archived_sessions_path.child(format!("rollout-2026-03-23T15-02-25-{thread_id}.jsonl"));
+    archived_rollout
+        .write_str(&format!(
+            "{}\n",
+            serde_json::json!({
+                "timestamp": "2026-03-23T07:03:03.185Z",
+                "type": "response_item",
+                "payload": {
+                    "thread_id": thread_id
+                }
+            })
+        ))
+        .unwrap();
+
+    create_threads_db(state_path.path(), &[]);
+
+    sync_source_history_provider(source_home.path(), HistorySyncProvider::ModexApiKey).unwrap();
+
+    assert_eq!(
+        thread_rows(state_path.path()),
+        vec![(
+            thread_id.to_string(),
+            "modex-api-key".to_string(),
+            1,
+            archived_rollout.path().display().to_string()
+        )]
+    );
+    assert_eq!(
+        thread_detail(state_path.path(), thread_id),
+        Some(("Recovered From Index".to_string(), "".to_string(), 1))
     );
 }
 
@@ -246,6 +420,19 @@ fn thread_rows(path: &Path) -> Vec<(String, String, i64, String)> {
         .unwrap()
         .map(Result::unwrap)
         .collect()
+}
+
+fn thread_detail(path: &Path, thread_id: &str) -> Option<(String, String, i64)> {
+    let connection = Connection::open(path).unwrap();
+    connection
+        .query_row(
+            "SELECT title, cwd, archived
+             FROM threads
+             WHERE id = ?1",
+            [thread_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .ok()
 }
 
 fn rollout_provider(path: &Path) -> Option<String> {
