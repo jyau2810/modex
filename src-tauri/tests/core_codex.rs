@@ -172,7 +172,7 @@ fn prepare_identity_for_launch_syncs_api_key_auth_and_applies_base_url() {
     let payload: serde_json::Value = serde_json::from_str(&first_line).unwrap();
     assert_eq!(
         payload["session_meta"]["payload"]["model_provider"],
-        "openai"
+        "modex-api-key"
     );
 }
 

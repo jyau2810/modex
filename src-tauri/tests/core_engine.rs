@@ -401,7 +401,7 @@ fn import_current_identity_self_heals_history_view_for_existing_api_key_account(
     );
     assert_eq!(
         rollout_provider(&source_home.join("sessions/thread-a.jsonl")).as_deref(),
-        Some("openai")
+        Some("modex-api-key")
     );
 }
 
@@ -554,7 +554,7 @@ fn sync_current_identity_runtime_history_from_source_auth_self_heals_provider_vi
     );
     assert_eq!(
         rollout_provider(&source_home.join("sessions/thread-a.jsonl")).as_deref(),
-        Some("openai")
+        Some("modex-api-key")
     );
 }
 

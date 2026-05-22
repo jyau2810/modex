@@ -6,12 +6,12 @@ use modex_lib::core::sync::{sync_source_history_provider, HistorySyncProvider};
 use rusqlite::{params, Connection};
 
 #[test]
-fn sync_source_history_provider_retags_threads_bidirectionally_without_rewriting_rollouts() {
+fn sync_source_history_provider_rewrites_rollouts_and_retags_threads_bidirectionally() {
     let temp = assert_fs::TempDir::new().unwrap();
     let source_home = temp.child("source");
     source_home.create_dir_all().unwrap();
     let state_path = source_home.child("state_5.sqlite");
-    let sessions_path = source_home.child("sessions");
+    let sessions_path = source_home.child("sessions/2026/05/22");
     let archived_sessions_path = source_home.child("archived_sessions");
     sessions_path.create_dir_all().unwrap();
     archived_sessions_path.create_dir_all().unwrap();
@@ -38,7 +38,12 @@ fn sync_source_history_provider_retags_threads_bidirectionally_without_rewriting
     create_threads_db(
         state_path.path(),
         &[
-            thread_row("thread-open", "openai", "sessions/project-a.jsonl", false),
+            thread_row(
+                "thread-open",
+                "openai",
+                "sessions/2026/05/22/project-a.jsonl",
+                false,
+            ),
             thread_row(
                 "thread-archived",
                 "openai",
@@ -63,27 +68,17 @@ fn sync_source_history_provider_retags_threads_bidirectionally_without_rewriting
                 "thread-open".to_string(),
                 "modex-api-key".to_string(),
                 0,
-                "sessions/project-a.jsonl".to_string()
+                "sessions/2026/05/22/project-a.jsonl".to_string()
             ),
         ]
     );
-    let original_primary_rollout = fs::read_to_string(primary_rollout.path()).unwrap();
-    let original_archived_rollout = fs::read_to_string(archived_rollout.path()).unwrap();
     assert_eq!(
         rollout_provider(primary_rollout.path()).as_deref(),
-        Some("openai")
+        Some("modex-api-key")
     );
     assert_eq!(
         rollout_provider(archived_rollout.path()).as_deref(),
-        Some("openai")
-    );
-    assert_eq!(
-        fs::read_to_string(primary_rollout.path()).unwrap(),
-        original_primary_rollout
-    );
-    assert_eq!(
-        fs::read_to_string(archived_rollout.path()).unwrap(),
-        original_archived_rollout
+        Some("modex-api-key")
     );
 
     sync_source_history_provider(source_home.path(), HistorySyncProvider::OpenAi).unwrap();
@@ -101,7 +96,7 @@ fn sync_source_history_provider_retags_threads_bidirectionally_without_rewriting
                 "thread-open".to_string(),
                 "openai".to_string(),
                 0,
-                "sessions/project-a.jsonl".to_string()
+                "sessions/2026/05/22/project-a.jsonl".to_string()
             ),
         ]
     );
@@ -116,7 +111,7 @@ fn sync_source_history_provider_retags_threads_bidirectionally_without_rewriting
 }
 
 #[test]
-fn sync_source_history_provider_does_not_touch_current_rollout_session_meta_format() {
+fn sync_source_history_provider_rewrites_current_rollout_session_meta_format() {
     let temp = assert_fs::TempDir::new().unwrap();
     let source_home = temp.child("source");
     source_home.create_dir_all().unwrap();
@@ -143,20 +138,14 @@ fn sync_source_history_provider_does_not_touch_current_rollout_session_meta_form
             true,
         )],
     );
-    let original_rollout = fs::read_to_string(archived_rollout.path()).unwrap();
-
     sync_source_history_provider(source_home.path(), HistorySyncProvider::ModexApiKey).unwrap();
 
     let first_line = first_rollout_json(archived_rollout.path());
     assert_eq!(first_line["type"], "session_meta");
-    assert_eq!(first_line["payload"]["model_provider"], "openai");
+    assert_eq!(first_line["payload"]["model_provider"], "modex-api-key");
     assert_eq!(
         rollout_provider(archived_rollout.path()).as_deref(),
-        Some("openai")
-    );
-    assert_eq!(
-        fs::read_to_string(archived_rollout.path()).unwrap(),
-        original_rollout
+        Some("modex-api-key")
     );
     assert_eq!(
         thread_rows(state_path.path()),
@@ -175,7 +164,7 @@ fn sync_source_history_provider_backfills_missing_threads_from_index_and_rollout
     let source_home = temp.child("source");
     source_home.create_dir_all().unwrap();
     let state_path = source_home.child("state_5.sqlite");
-    let sessions_path = source_home.child("sessions");
+    let sessions_path = source_home.child("sessions/2026/05/22");
     let archived_sessions_path = source_home.child("archived_sessions");
     sessions_path.create_dir_all().unwrap();
     archived_sessions_path.create_dir_all().unwrap();
@@ -226,7 +215,7 @@ fn sync_source_history_provider_backfills_missing_threads_from_index_and_rollout
         &[thread_row(
             "thread-open",
             "openai",
-            "sessions/project-a.jsonl",
+            "sessions/2026/05/22/project-a.jsonl",
             false,
         )],
     );
@@ -246,7 +235,7 @@ fn sync_source_history_provider_backfills_missing_threads_from_index_and_rollout
                 "thread-open".to_string(),
                 "modex-api-key".to_string(),
                 0,
-                "sessions/project-a.jsonl".to_string()
+                "sessions/2026/05/22/project-a.jsonl".to_string()
             ),
         ]
     );
@@ -259,8 +248,12 @@ fn sync_source_history_provider_backfills_missing_threads_from_index_and_rollout
         ))
     );
     assert_eq!(
+        rollout_provider(primary_rollout.path()).as_deref(),
+        Some("modex-api-key")
+    );
+    assert_eq!(
         rollout_provider(archived_rollout.path()).as_deref(),
-        Some("openai")
+        Some("modex-api-key")
     );
 
     sync_source_history_provider(source_home.path(), HistorySyncProvider::OpenAi).unwrap();
@@ -278,9 +271,17 @@ fn sync_source_history_provider_backfills_missing_threads_from_index_and_rollout
                 "thread-open".to_string(),
                 "openai".to_string(),
                 0,
-                "sessions/project-a.jsonl".to_string()
+                "sessions/2026/05/22/project-a.jsonl".to_string()
             ),
         ]
+    );
+    assert_eq!(
+        rollout_provider(primary_rollout.path()).as_deref(),
+        Some("openai")
+    );
+    assert_eq!(
+        rollout_provider(archived_rollout.path()).as_deref(),
+        Some("openai")
     );
 }
 

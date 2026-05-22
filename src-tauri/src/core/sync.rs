@@ -7,6 +7,7 @@ use rusqlite::types::Value as SqlValue;
 use rusqlite::{params, params_from_iter, Connection, Transaction};
 use serde::Deserialize;
 use serde_json::Value;
+use tempfile::TempDir;
 
 use super::app_config::{AppIdentity, IdentityAuthType};
 use super::{ModexError, ModexResult};
@@ -91,28 +92,149 @@ pub fn sync_source_history_provider(
     provider: HistorySyncProvider,
 ) -> ModexResult<()> {
     let state_path = source_home.join(STATE_DB_NAME);
-    if !state_path.exists() {
-        return Ok(());
-    }
-
     let session_index = load_session_index(source_home)?;
-    let rollout_threads = collect_rollout_threads(source_home, &session_index)?;
+    let rollout_paths = collect_rollout_paths(source_home)?;
+    let rollout_threads = collect_rollout_threads(source_home, &rollout_paths, &session_index)?;
+    let rollout_rewrites = collect_rollout_rewrites(&rollout_paths, provider)?;
+    let rollout_backup = RolloutBackup::capture(&rollout_rewrites)?;
 
-    let mut connection = Connection::open(&state_path)?;
-    let transaction = connection.transaction()?;
-    let thread_columns = load_thread_columns(&transaction)?;
+    let result = (|| {
+        if state_path.exists() {
+            let mut connection = Connection::open(&state_path)?;
+            let transaction = connection.transaction()?;
+            let thread_columns = load_thread_columns(&transaction)?;
 
-    retag_provider_view(&transaction, provider)?;
+            retag_provider_view(&transaction, provider)?;
 
-    let mut existing_ids = load_existing_thread_ids(&transaction)?;
-    for rollout_thread in rollout_threads {
-        if !existing_ids.insert(rollout_thread.id.clone()) {
-            continue;
+            let mut existing_ids = load_existing_thread_ids(&transaction)?;
+            for rollout_thread in &rollout_threads {
+                if !existing_ids.insert(rollout_thread.id.clone()) {
+                    continue;
+                }
+                insert_thread_row(&transaction, &thread_columns, rollout_thread, provider)?;
+            }
+
+            apply_rollout_rewrites(&rollout_rewrites)?;
+            transaction.commit()?;
+        } else {
+            apply_rollout_rewrites(&rollout_rewrites)?;
         }
-        insert_thread_row(&transaction, &thread_columns, &rollout_thread, provider)?;
+
+        Ok(())
+    })();
+
+    match result {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            if let Err(restore_error) = rollout_backup.restore() {
+                return Err(ModexError::from(format!(
+                    "{error}; 且会话 rollout 回滚失败：{restore_error}"
+                )));
+            }
+            Err(error)
+        }
+    }
+}
+
+fn apply_rollout_rewrites(rewrites: &[RolloutRewrite]) -> ModexResult<()> {
+    for rewrite in rewrites {
+        write_text_atomically(&rewrite.path, &rewrite.contents)?;
+    }
+    Ok(())
+}
+
+fn collect_rollout_rewrites(
+    rollout_paths: &[PathBuf],
+    provider: HistorySyncProvider,
+) -> ModexResult<Vec<RolloutRewrite>> {
+    let mut rewrites = Vec::new();
+    for rollout_path in rollout_paths {
+        let contents = fs::read_to_string(rollout_path)?;
+        let Some(rewritten_contents) = rewrite_rollout_provider(&contents, provider)? else {
+            continue;
+        };
+        rewrites.push(RolloutRewrite {
+            path: rollout_path.clone(),
+            contents: rewritten_contents,
+        });
+    }
+    Ok(rewrites)
+}
+
+fn rewrite_rollout_provider(
+    contents: &str,
+    provider: HistorySyncProvider,
+) -> ModexResult<Option<String>> {
+    let (first_line, _) = split_first_line(contents);
+    let trimmed_first_line = first_line.trim();
+    if trimmed_first_line.is_empty() {
+        return Ok(None);
+    }
+    let Ok(mut first_line_json) = serde_json::from_str::<Value>(trimmed_first_line) else {
+        return Ok(None);
+    };
+    let Some(payload) = extract_rollout_payload_mut(&mut first_line_json) else {
+        return Ok(None);
+    };
+    let Some(payload_object) = payload.as_object_mut() else {
+        return Ok(None);
+    };
+
+    let should_rewrite = match payload_object
+        .get("model_provider")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        Some(current) if current == provider.as_str() => false,
+        Some(current) if current == OPENAI_PROVIDER_ID || current == MODEX_API_KEY_PROVIDER_ID => {
+            true
+        }
+        Some(_) => false,
+        None => true,
+    };
+    if !should_rewrite {
+        return Ok(None);
     }
 
-    transaction.commit()?;
+    payload_object.insert(
+        "model_provider".to_string(),
+        Value::String(provider.as_str().to_string()),
+    );
+    let rewritten_first_line = serde_json::to_string(&first_line_json)?;
+    Ok(Some(replace_first_line(contents, &rewritten_first_line)))
+}
+
+fn split_first_line(contents: &str) -> (&str, Option<&str>) {
+    contents
+        .split_once('\n')
+        .map_or((contents, None), |(first_line, rest)| {
+            (first_line, Some(rest))
+        })
+}
+
+fn replace_first_line(contents: &str, next_first_line: &str) -> String {
+    match split_first_line(contents) {
+        (_, Some(rest)) => format!("{next_first_line}\n{rest}"),
+        (_, None) => next_first_line.to_string(),
+    }
+}
+
+fn write_text_atomically(path: &Path, contents: &str) -> ModexResult<()> {
+    let temporary = path.with_file_name(format!(
+        "{}.modex-sync",
+        path.file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("rollout")
+    ));
+    fs::write(&temporary, contents)?;
+    if let Ok(metadata) = fs::metadata(path) {
+        let _ = fs::set_permissions(&temporary, metadata.permissions());
+    }
+    fs::rename(&temporary, path).map_err(|error| {
+        let _ = fs::remove_file(&temporary);
+        ModexError::from(error)
+    })?;
     Ok(())
 }
 
@@ -338,24 +460,9 @@ fn load_session_index(source_home: &Path) -> ModexResult<HashMap<String, Session
 
 fn collect_rollout_threads(
     source_home: &Path,
+    rollout_paths: &[PathBuf],
     session_index: &HashMap<String, SessionIndexEntry>,
 ) -> ModexResult<Vec<RolloutThread>> {
-    let mut rollout_paths = Vec::new();
-    for directory_name in [ACTIVE_SESSIONS_DIR, ARCHIVED_SESSIONS_DIR] {
-        let directory = source_home.join(directory_name);
-        if !directory.is_dir() {
-            continue;
-        }
-        for entry in fs::read_dir(directory)? {
-            let path = entry?.path();
-            if path.extension().and_then(|value| value.to_str()) != Some("jsonl") {
-                continue;
-            }
-            rollout_paths.push(path);
-        }
-    }
-    rollout_paths.sort();
-
     let mut by_thread_id = HashMap::new();
     for rollout_path in rollout_paths {
         if let Some(rollout_thread) =
@@ -371,6 +478,42 @@ fn collect_rollout_threads(
     let mut rollout_threads = by_thread_id.into_values().collect::<Vec<_>>();
     rollout_threads.sort_by(|left, right| left.id.cmp(&right.id));
     Ok(rollout_threads)
+}
+
+fn collect_rollout_paths(source_home: &Path) -> ModexResult<Vec<PathBuf>> {
+    let mut rollout_paths = Vec::new();
+    for directory_name in [ACTIVE_SESSIONS_DIR, ARCHIVED_SESSIONS_DIR] {
+        collect_rollout_paths_in_directory(&source_home.join(directory_name), &mut rollout_paths)?;
+    }
+    rollout_paths.sort();
+    Ok(rollout_paths)
+}
+
+fn collect_rollout_paths_in_directory(
+    directory: &Path,
+    rollout_paths: &mut Vec<PathBuf>,
+) -> ModexResult<()> {
+    if !directory.is_dir() {
+        return Ok(());
+    }
+
+    let mut entries = fs::read_dir(directory)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(ModexError::from)?;
+    entries.sort_by_key(|entry| entry.path());
+
+    for entry in entries {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_rollout_paths_in_directory(&path, rollout_paths)?;
+            continue;
+        }
+        if path.extension().and_then(|value| value.to_str()) == Some("jsonl") {
+            rollout_paths.push(path);
+        }
+    }
+
+    Ok(())
 }
 
 fn parse_rollout_thread(
@@ -495,6 +638,23 @@ fn extract_rollout_payload(value: &Value) -> Option<&Value> {
         })
 }
 
+fn extract_rollout_payload_mut(value: &mut Value) -> Option<&mut Value> {
+    if value.get("session_meta").is_some() {
+        return value
+            .get_mut("session_meta")
+            .and_then(|inner| inner.get_mut("payload"));
+    }
+
+    let is_session_meta = value
+        .get("type")
+        .and_then(Value::as_str)
+        .is_some_and(|kind| kind == "session_meta");
+    if !is_session_meta {
+        return None;
+    }
+    value.get_mut("payload")
+}
+
 fn is_archived_rollout(source_home: &Path, rollout_path: &Path) -> bool {
     rollout_path
         .strip_prefix(source_home)
@@ -544,4 +704,84 @@ struct RolloutThread {
     cli_version: Option<String>,
     created_at: Option<String>,
     updated_at: Option<String>,
+}
+
+#[derive(Debug)]
+struct RolloutRewrite {
+    path: PathBuf,
+    contents: String,
+}
+
+struct RolloutBackup {
+    snapshots: Vec<RolloutSnapshot>,
+    temp_dir: TempDir,
+}
+
+impl RolloutBackup {
+    fn capture(rewrites: &[RolloutRewrite]) -> ModexResult<Self> {
+        let temp_dir = TempDir::new()?;
+        let mut rollout_paths = rewrites
+            .iter()
+            .map(|rewrite| rewrite.path.clone())
+            .collect::<Vec<_>>();
+        rollout_paths.sort();
+        rollout_paths.dedup();
+
+        let mut snapshots = Vec::with_capacity(rollout_paths.len());
+        for rollout_path in rollout_paths {
+            snapshots.push(RolloutSnapshot::capture(temp_dir.path(), rollout_path)?);
+        }
+
+        Ok(Self {
+            snapshots,
+            temp_dir,
+        })
+    }
+
+    fn restore(self) -> ModexResult<()> {
+        let _ = self.temp_dir.path();
+        for snapshot in self.snapshots {
+            snapshot.restore()?;
+        }
+        Ok(())
+    }
+}
+
+struct RolloutSnapshot {
+    original_path: PathBuf,
+    backup_path: PathBuf,
+}
+
+impl RolloutSnapshot {
+    fn capture(backup_root: &Path, original_path: PathBuf) -> ModexResult<Self> {
+        let sanitized = original_path
+            .to_string_lossy()
+            .replace('/', "__")
+            .replace(':', "_");
+        let backup_path = backup_root.join(sanitized);
+        fs::copy(&original_path, &backup_path)?;
+        Ok(Self {
+            original_path,
+            backup_path,
+        })
+    }
+
+    fn restore(self) -> ModexResult<()> {
+        if let Some(parent) = self.original_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let temporary = self.original_path.with_file_name(format!(
+            "{}.modex-restore",
+            self.original_path
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or("rollout")
+        ));
+        fs::copy(&self.backup_path, &temporary)?;
+        if let Ok(metadata) = fs::metadata(&self.original_path) {
+            let _ = fs::set_permissions(&temporary, metadata.permissions());
+        }
+        fs::rename(temporary, &self.original_path)?;
+        Ok(())
+    }
 }
