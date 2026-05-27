@@ -257,6 +257,39 @@ fn api_key_quota_errors_do_not_mark_login_expired() {
 }
 
 #[test]
+fn chatgpt_token_expired_error_marks_login_expired() {
+    let temp = assert_fs::TempDir::new().unwrap();
+    let config = temp.child("config.json");
+    let chatgpt_home = temp.path().join(".modex/chatgpt");
+    std::fs::create_dir_all(&chatgpt_home).unwrap();
+    std::fs::write(
+        chatgpt_home.join("auth.json"),
+        auth_json("team@example.com", "user-team", "acct-team", "team"),
+    )
+    .unwrap();
+    let mut settings = AppSettings::default_for_home(temp.path().to_path_buf());
+    settings.identities.push(AppIdentity {
+        name: "Team".to_string(),
+        codex_home: chatgpt_home,
+        monitor: false,
+        workspace_id: None,
+        auth_type: Default::default(),
+        api_base_url: None,
+    });
+    let mut engine = AppEngine::new(settings, config.path().to_path_buf());
+
+    engine.set_error(
+        "team@example.com · 团队版",
+        r#"{"code":"token_expired"}"#.to_string(),
+    );
+
+    let identity = engine.app_state().identities.into_iter().next().unwrap();
+    assert!(identity.login_expired);
+    assert!(!identity.logged_in);
+    assert_eq!(identity.quota.status, "error");
+}
+
+#[test]
 fn import_current_identity_copies_only_source_auth_to_managed_home() {
     let temp = assert_fs::TempDir::new().unwrap();
     let config = temp.child("config.json");

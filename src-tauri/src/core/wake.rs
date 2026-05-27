@@ -13,6 +13,9 @@ use super::codex::{build_codex_env, resolve_codex_binary};
 use super::engine::IdentityView;
 use super::ModexResult;
 
+const PRIMARY_WINDOW_SECONDS: i64 = 5 * 60 * 60;
+const PRIMARY_WINDOW_ADVANCE_TOLERANCE_SECONDS: i64 = 10 * 60;
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum WakeDecision {
@@ -160,11 +163,24 @@ pub fn wake_quota_evidence(
         Some(before_reset_at) if before_reset_at == after_reset_at => {
             WakeQuotaEvidence::Verified("primaryWindowStable")
         }
+        Some(before_reset_at)
+            if before_reset_at < after_reset_at
+                && looks_like_fresh_primary_window(after_reset_at, observed_at_secs) =>
+        {
+            WakeQuotaEvidence::Verified("primaryWindowAdvanced")
+        }
         Some(before_reset_at) if before_reset_at < after_reset_at => {
             WakeQuotaEvidence::Unverified("primaryWindowMovedWithoutUsage")
         }
         Some(_) => WakeQuotaEvidence::Unverified("primaryWindowMovedBackward"),
     }
+}
+
+fn looks_like_fresh_primary_window(reset_at: i64, observed_at_secs: i64) -> bool {
+    let seconds_until_reset = reset_at.saturating_sub(observed_at_secs);
+    let minimum = PRIMARY_WINDOW_SECONDS - PRIMARY_WINDOW_ADVANCE_TOLERANCE_SECONDS;
+    let maximum = PRIMARY_WINDOW_SECONDS + PRIMARY_WINDOW_ADVANCE_TOLERANCE_SECONDS;
+    (minimum..=maximum).contains(&seconds_until_reset)
 }
 
 pub fn finalize_wake_quota_evidence(

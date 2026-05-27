@@ -317,8 +317,15 @@ impl AppEngine {
     }
 
     pub fn set_daily_wake_last_run_slot(&mut self, date: String, time: String) -> ModexResult<()> {
+        self.set_daily_wake_last_run_slot_key(date.clone(), format!("{date}#{time}"))
+    }
+
+    pub fn set_daily_wake_last_run_slot_key(
+        &mut self,
+        date: String,
+        slot: String,
+    ) -> ModexResult<()> {
         let prefix = format!("{date}#");
-        let slot = format!("{prefix}{time}");
         self.settings
             .daily_wake
             .last_run_slots
@@ -628,6 +635,7 @@ fn is_login_expired_error(error: &str) -> bool {
         || lower.contains("missing auth")
         || lower.contains("not logged in")
         || lower.contains("not authenticated")
+        || lower.contains("token_expired")
         || lower.contains("unauthorized")
         || lower.contains("401")
         || (lower.contains("login") && (lower.contains("expired") || lower.contains("required")))

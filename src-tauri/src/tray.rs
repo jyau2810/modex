@@ -9,6 +9,7 @@ use tauri::tray::TrayIconBuilder;
 use tauri::{image::Image, AppHandle, Emitter, Manager};
 
 use crate::commands::{show_main_window, start_refresh_all_with_events, ModexState};
+use crate::core::app_config::IdentityAuthType;
 
 const TRAY_ID: &str = "modex-main";
 #[cfg(target_os = "macos")]
@@ -23,6 +24,7 @@ const MENU_SETTINGS: &str = "settings";
 const MENU_REFRESH: &str = "refresh";
 const MENU_QUIT: &str = "quit";
 const IDENTITY_PREFIX: &str = "identity::";
+const LOGIN_PREFIX: &str = "login::";
 
 pub fn setup(app: &AppHandle) -> tauri::Result<()> {
     let menu = build_menu(app)?;
@@ -152,6 +154,20 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
                 None::<&str>,
             )?;
             menu.append(&item)?;
+            if identity_menu_relogin_available(
+                &identity.auth_type,
+                identity.logged_in,
+                identity.login_expired,
+            ) {
+                let login_item = MenuItem::with_id(
+                    app,
+                    format!("{LOGIN_PREFIX}{}", identity.name),
+                    format!("重新登录 {}", identity.name),
+                    !refreshing,
+                    None::<&str>,
+                )?;
+                menu.append(&login_item)?;
+            }
         }
     }
 
@@ -216,6 +232,17 @@ fn handle_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
             let _ = refresh_menu(app);
             crate::commands::emit_state_updated(app);
         }
+        _ if id.starts_with(LOGIN_PREFIX) => {
+            let name = id.trim_start_matches(LOGIN_PREFIX).to_string();
+            let app = app.clone();
+            tauri::async_runtime::spawn(async move {
+                if let Err(error) = crate::commands::login_identity(app.clone(), name).await {
+                    eprintln!("modex tray login failed: {error}");
+                }
+                let _ = refresh_menu(&app);
+                crate::commands::emit_state_updated(&app);
+            });
+        }
         _ => {}
     }
 }
@@ -248,6 +275,14 @@ fn identity_menu_selectable(available: bool, is_current: bool) -> bool {
     available && !is_current
 }
 
+fn identity_menu_relogin_available(
+    auth_type: &IdentityAuthType,
+    logged_in: bool,
+    login_expired: bool,
+) -> bool {
+    auth_type == &IdentityAuthType::ChatGpt && (!logged_in || login_expired)
+}
+
 #[cfg(test)]
 mod tests {
     #[cfg(target_os = "macos")]
@@ -256,7 +291,12 @@ mod tests {
     use super::macos_tray_autosave_name;
     #[cfg(target_os = "macos")]
     use super::macos_tray_visibility_preference_key;
-    use super::{identity_menu_available, identity_menu_label, identity_menu_selectable};
+    use crate::core::app_config::IdentityAuthType;
+
+    use super::{
+        identity_menu_available, identity_menu_label, identity_menu_relogin_available,
+        identity_menu_selectable,
+    };
 
     #[cfg(target_os = "macos")]
     #[test]
@@ -313,5 +353,29 @@ mod tests {
         assert!(identity_menu_selectable(true, false));
         assert!(!identity_menu_selectable(true, true));
         assert!(!identity_menu_selectable(false, false));
+    }
+
+    #[test]
+    fn identity_menu_offers_relogin_for_unavailable_chatgpt_accounts() {
+        assert!(identity_menu_relogin_available(
+            &IdentityAuthType::ChatGpt,
+            false,
+            false
+        ));
+        assert!(identity_menu_relogin_available(
+            &IdentityAuthType::ChatGpt,
+            true,
+            true
+        ));
+        assert!(!identity_menu_relogin_available(
+            &IdentityAuthType::ChatGpt,
+            true,
+            false
+        ));
+        assert!(!identity_menu_relogin_available(
+            &IdentityAuthType::ApiKey,
+            false,
+            true
+        ));
     }
 }

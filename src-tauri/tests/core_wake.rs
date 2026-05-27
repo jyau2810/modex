@@ -164,13 +164,27 @@ fn wake_quota_evidence_confirms_stable_active_window() {
 }
 
 #[test]
-fn wake_quota_evidence_rejects_ok_reply_without_window_signal() {
+fn wake_quota_evidence_confirms_fresh_window_move_without_percent_change() {
     assert_eq!(
         wake_quota_evidence(
             1,
             Some(1_779_000_000),
             1,
             Some(1_779_000_045),
+            1_778_982_045
+        ),
+        WakeQuotaEvidence::Verified("primaryWindowAdvanced")
+    );
+}
+
+#[test]
+fn wake_quota_evidence_rejects_ok_reply_without_window_signal() {
+    assert_eq!(
+        wake_quota_evidence(
+            1,
+            Some(1_779_000_000),
+            1,
+            Some(1_779_060_000),
             1_778_982_045
         ),
         WakeQuotaEvidence::Unverified("primaryWindowMovedWithoutUsage")

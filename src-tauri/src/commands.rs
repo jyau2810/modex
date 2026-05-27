@@ -605,8 +605,11 @@ fn run_daily_wake_job(
         }
         return Ok(());
     };
+    let scheduled_slot_to_mark = (mode == WakeRunMode::Scheduled)
+        .then(|| scheduled_time.map(ToString::to_string))
+        .flatten();
     let (settings, identities, mut wake_settings) = {
-        let mut engine = state
+        let engine = state
             .engine
             .lock()
             .map_err(|_| "Modex state lock poisoned".to_string())?;
@@ -623,13 +626,6 @@ fn run_daily_wake_job(
         {
             return Ok(());
         }
-        if mode == WakeRunMode::Scheduled {
-            if let Some(time) = scheduled_time {
-                engine
-                    .set_daily_wake_last_run_slot(today.to_string(), time.to_string())
-                    .map_err(|error| error.to_string())?;
-            }
-        }
         (
             settings.clone(),
             settings.identities.clone(),
@@ -641,9 +637,15 @@ fn run_daily_wake_job(
     emit_refresh_started(app);
     let run_id = format!("wake-{}-{today}-{}", mode.as_str(), timestamp_millis());
     let mut circuit_breaker = false;
+    let mut slot_retry_needed = false;
     for identity in identities {
         if circuit_breaker {
             break;
+        }
+        if let Some(time) = scheduled_slot_to_mark.as_deref() {
+            if wake_identity_slot_completed(&wake_settings, today, time, &identity.name) {
+                continue;
+            }
         }
         if is_known_non_team_identity(&identity) {
             continue;
@@ -663,6 +665,27 @@ fn run_daily_wake_job(
 
         match should_wake_identity(&identity_view, &wake_settings, today) {
             WakeDecision::Skip(reason) => {
+                let reason_code = format!("{reason:?}");
+                if wake_slot_needs_retry(
+                    "skipped",
+                    Some(reason_code.as_str()),
+                    identity_view.quota.error.as_deref(),
+                ) {
+                    slot_retry_needed = true;
+                }
+                if let Some(time) = scheduled_slot_to_mark.as_deref() {
+                    if !wake_slot_needs_retry(
+                        "skipped",
+                        Some(reason_code.as_str()),
+                        identity_view.quota.error.as_deref(),
+                    ) {
+                        mark_daily_wake_slot_key(
+                            state.inner(),
+                            today,
+                            wake_identity_slot_key(today, time, &identity.name),
+                        );
+                    }
+                }
                 if !should_log_wake_skip(&reason) {
                     continue;
                 }
@@ -830,6 +853,20 @@ fn run_daily_wake_job(
                 )
             }
         };
+        let needs_retry = wake_slot_needs_retry(
+            decision,
+            reason.as_deref(),
+            audit_view.quota.error.as_deref(),
+        );
+        if needs_retry {
+            slot_retry_needed = true;
+        } else if let Some(time) = scheduled_slot_to_mark.as_deref() {
+            mark_daily_wake_slot_key(
+                state.inner(),
+                today,
+                wake_identity_slot_key(today, time, &identity.name),
+            );
+        }
         let mut entry = wake_audit_entry(
             &run_id,
             &audit_view,
@@ -842,6 +879,11 @@ fn run_daily_wake_job(
         );
         entry.reason = reason;
         emit_and_append_log(app, entry);
+    }
+    if let Some(time) = scheduled_slot_to_mark.as_deref() {
+        if !slot_retry_needed {
+            mark_daily_wake_slot_key(state.inner(), today, wake_slot_key(today, time));
+        }
     }
     drop(guard);
     refresh_tray(app);
@@ -905,6 +947,19 @@ fn quota_refresh_error_log_entry(trigger: &str, identity: &IdentityView) -> Opti
         return None;
     }
     let timestamp = timestamp_millis();
+    let (title, message, reason) = if identity.login_expired {
+        (
+            "登录失效".to_string(),
+            format!("{} 登录已失效，需要重新登录。", identity.name),
+            "loginExpired".to_string(),
+        )
+    } else {
+        (
+            "配额刷新失败".to_string(),
+            format!("{} 配额刷新失败：{error}", identity.name),
+            "quotaRefreshError".to_string(),
+        )
+    };
     Some(WakeAuditEntry {
         id: format!("quota-refresh:{trigger}:{}:{timestamp}", identity.name),
         run_id: format!("quota-refresh:{trigger}:{timestamp}"),
@@ -912,10 +967,10 @@ fn quota_refresh_error_log_entry(trigger: &str, identity: &IdentityView) -> Opti
         level: "error".to_string(),
         source: "quotaRefresh".to_string(),
         identity_name: Some(identity.name.clone()),
-        title: "配额刷新失败".to_string(),
-        message: format!("{} 配额刷新失败：{error}", identity.name),
+        title,
+        message,
         decision: "error".to_string(),
-        reason: Some("quotaRefreshError".to_string()),
+        reason: Some(reason),
         primary_used_percent: Some(identity.quota.primary_percent),
         weekly_remaining_percent: Some(weekly_remaining_percent(identity)),
         thresholds: WakeThresholds::from(&DailyWakeSettings::default()),
@@ -979,6 +1034,23 @@ fn wake_slot_key(today: &str, time: &str) -> String {
     format!("{today}#{time}")
 }
 
+fn wake_identity_slot_key(today: &str, time: &str, identity_name: &str) -> String {
+    format!("{}#{}", wake_slot_key(today, time), identity_name)
+}
+
+fn wake_identity_slot_completed(
+    settings: &DailyWakeSettings,
+    today: &str,
+    time: &str,
+    identity_name: &str,
+) -> bool {
+    let slot = wake_identity_slot_key(today, time, identity_name);
+    settings
+        .last_run_slots
+        .iter()
+        .any(|existing| existing == &slot)
+}
+
 fn is_known_non_team_identity(identity: &AppIdentity) -> bool {
     if identity.auth_type == IdentityAuthType::ApiKey {
         return true;
@@ -1000,6 +1072,33 @@ fn known_identity_plan_label(identity: &AppIdentity) -> Option<String> {
 
 fn should_log_wake_skip(reason: &WakeSkipReason) -> bool {
     !matches!(reason, WakeSkipReason::NotTeamPlan)
+}
+
+fn wake_slot_needs_retry(decision: &str, reason: Option<&str>, quota_error: Option<&str>) -> bool {
+    match decision {
+        "unverified" => true,
+        "skipped" => {
+            matches!(reason, Some("LoginUnavailable"))
+                || (matches!(reason, Some("QuotaUnavailable")) && quota_error.is_some())
+        }
+        "circuitBreaker" => matches!(reason, Some("timedOut" | "nonZeroExit" | "executionError")),
+        _ => false,
+    }
+}
+
+fn mark_daily_wake_slot_key(state: &ModexState, today: &str, slot: String) {
+    let result = state
+        .engine
+        .lock()
+        .map_err(|_| "Modex state lock poisoned".to_string())
+        .and_then(|mut engine| {
+            engine
+                .set_daily_wake_last_run_slot_key(today.to_string(), slot)
+                .map_err(|error| error.to_string())
+        });
+    if let Err(error) = result {
+        eprintln!("modex daily wake slot mark failed: {error}");
+    }
 }
 
 fn refresh_tray(app: &AppHandle) {
@@ -1352,6 +1451,39 @@ mod tests {
     }
 
     #[test]
+    fn quota_refresh_error_log_entry_labels_expired_logins() {
+        let temp = assert_fs::TempDir::new().unwrap();
+        let mut settings = AppSettings::default_for_home(temp.path().to_path_buf());
+        let identity_home = temp.path().join(".modex/team");
+        std::fs::create_dir_all(&identity_home).unwrap();
+        std::fs::write(
+            identity_home.join("auth.json"),
+            auth_json("team@example.com", "user-team", "acct-team", "team"),
+        )
+        .unwrap();
+        settings.identities.push(AppIdentity {
+            name: "Team".to_string(),
+            codex_home: identity_home,
+            monitor: false,
+            workspace_id: None,
+            auth_type: Default::default(),
+            api_base_url: None,
+        });
+        let state = ModexState::new(AppEngine::new(settings, temp.path().join("config.json")));
+        let guard = state.try_begin_refresh().unwrap();
+
+        let refreshed = refresh_all_with_reader(&state, guard, |_settings, _identity| {
+            Err(ModexError::from(r#"{"code":"token_expired"}"#))
+        })
+        .unwrap();
+
+        let entry = quota_refresh_error_log_entry("manual", &refreshed[0]).unwrap();
+        assert_eq!(entry.title, "登录失效");
+        assert_eq!(entry.reason.as_deref(), Some("loginExpired"));
+        assert!(entry.message.contains("需要重新登录"));
+    }
+
+    #[test]
     fn wake_audit_entry_includes_quota_error_detail() {
         let temp = assert_fs::TempDir::new().unwrap();
         let mut settings = AppSettings::default_for_home(temp.path().to_path_buf());
@@ -1533,6 +1665,46 @@ mod tests {
     }
 
     #[test]
+    fn daily_wake_identity_slot_markers_do_not_finish_the_whole_slot() {
+        let mut settings = DailyWakeSettings {
+            enabled: true,
+            time: "08:30".to_string(),
+            times: vec!["08:30".to_string()],
+            ..DailyWakeSettings::default()
+        };
+        settings.last_run_slots = vec![wake_identity_slot_key(
+            "2026-05-18",
+            "08:30",
+            "team@example.com",
+        )];
+
+        assert_eq!(
+            pending_daily_wake_time(&settings, "2026-05-18", "08:32").as_deref(),
+            Some("08:30")
+        );
+        assert!(wake_identity_slot_completed(
+            &settings,
+            "2026-05-18",
+            "08:30",
+            "team@example.com"
+        ));
+        assert!(!wake_identity_slot_completed(
+            &settings,
+            "2026-05-18",
+            "08:30",
+            "backup@example.com"
+        ));
+
+        settings
+            .last_run_slots
+            .push(wake_slot_key("2026-05-18", "08:30"));
+        assert_eq!(
+            pending_daily_wake_time(&settings, "2026-05-18", "08:32"),
+            None
+        );
+    }
+
+    #[test]
     fn daily_wake_ignores_legacy_last_run_date_without_slot_marker() {
         let mut settings = DailyWakeSettings {
             enabled: true,
@@ -1575,6 +1747,50 @@ mod tests {
             &WakeSkipReason::PrimaryUsageAboveThreshold
         ));
         assert!(should_log_wake_skip(&WakeSkipReason::QuotaUnavailable));
+    }
+
+    #[test]
+    fn scheduled_wake_retries_transient_or_unverified_results() {
+        assert!(wake_slot_needs_retry(
+            "unverified",
+            Some("quotaWindowUnverified"),
+            None
+        ));
+        assert!(wake_slot_needs_retry(
+            "circuitBreaker",
+            Some("nonZeroExit"),
+            None
+        ));
+        assert!(wake_slot_needs_retry(
+            "circuitBreaker",
+            Some("timedOut"),
+            None
+        ));
+        assert!(wake_slot_needs_retry(
+            "skipped",
+            Some("QuotaUnavailable"),
+            Some("timed out waiting for account/rateLimits/read")
+        ));
+    }
+
+    #[test]
+    fn scheduled_wake_finishes_slot_for_stable_outcomes() {
+        assert!(!wake_slot_needs_retry("woke", None, None));
+        assert!(!wake_slot_needs_retry(
+            "skipped",
+            Some("PrimaryUsageAboveThreshold"),
+            None
+        ));
+        assert!(!wake_slot_needs_retry(
+            "skipped",
+            Some("WeeklyRemainingBelowThreshold"),
+            None
+        ));
+        assert!(!wake_slot_needs_retry(
+            "circuitBreaker",
+            Some("primaryDeltaExceeded"),
+            None
+        ));
     }
 
     #[test]

@@ -193,9 +193,21 @@ describe("App", () => {
     expect(unknownRow.querySelector(".quota-meter")).not.toBeInTheDocument();
 
     expect(screen.queryByText("快捷操作")).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /重新登录/ })).not.toBeInTheDocument();
+    expect(within(backupRow).getByRole("button", { name: /重新登录 backup@example.com/ })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /刷新配额/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("switch", { name: /监控配额恢复/ })).not.toBeInTheDocument();
+  });
+
+  it("opens browser login again for an expired account", async () => {
+    mockApi.getAppState.mockResolvedValue(state());
+    mockApi.loginIdentity.mockResolvedValue({ ok: true, message: "已打开浏览器登录：backup@example.com" });
+
+    render(<App />);
+
+    const backupRow = await screen.findByRole("article", { name: /backup@example.com/ });
+    await userEvent.click(within(backupRow).getByRole("button", { name: /重新登录 backup@example.com/ }));
+
+    await waitFor(() => expect(mockApi.loginIdentity).toHaveBeenCalledWith("backup@example.com"));
   });
 
   it("labels api key identities without marking them expired", async () => {

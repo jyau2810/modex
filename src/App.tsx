@@ -6,6 +6,7 @@ import {
   FileText,
   FolderOpen,
   KeyRound,
+  LogIn,
   Loader2,
   Plus,
   Power,
@@ -285,6 +286,19 @@ function App() {
       reload: false,
     });
 
+  const reloginIdentity = (identity: Identity) =>
+    runAction(
+      `login-${identity.name}`,
+      async () => {
+        await modexApi.loginIdentity(identity.name);
+        pollLoginState(identity);
+      },
+      {
+        failureNoticeTitle: "重新登录失败",
+        reload: false,
+      },
+    );
+
   const switchIdentity = (name: string) =>
     runAction(
       "switch",
@@ -454,6 +468,7 @@ function App() {
               identities={appState.identities}
               busy={busy}
               onSwitch={switchIdentity}
+              onRelogin={reloginIdentity}
               onOpenDirectory={openIdentityDirectory}
               onDelete={requestDeleteIdentity}
             />
@@ -544,12 +559,14 @@ function AccountWorkbench({
   identities,
   busy,
   onSwitch,
+  onRelogin,
   onOpenDirectory,
   onDelete,
 }: {
   identities: Identity[];
   busy: string | null;
   onSwitch: (name: string) => void;
+  onRelogin: (identity: Identity) => void;
   onOpenDirectory: (name: string) => void;
   onDelete: (name: string) => void;
 }) {
@@ -561,6 +578,7 @@ function AccountWorkbench({
           identity={identity}
           busy={busy}
           onSwitch={() => onSwitch(identity.name)}
+          onRelogin={() => onRelogin(identity)}
           onOpenDirectory={() => onOpenDirectory(identity.name)}
           onDelete={() => onDelete(identity.name)}
         />
@@ -719,16 +737,19 @@ function AccountRow({
   identity,
   busy,
   onSwitch,
+  onRelogin,
   onOpenDirectory,
   onDelete,
 }: {
   identity: Identity;
   busy: string | null;
   onSwitch: () => void;
+  onRelogin: () => void;
   onOpenDirectory: () => void;
   onDelete: () => void;
 }) {
   const disabled = busy !== null;
+  const canRelogin = identity.authType === "chatGpt" && (identity.loginExpired || !identity.loggedIn);
   const shouldShowQuota = identity.quota.status !== "unknown" && identity.quota.plan !== "企业版";
   const quotaMeters = shouldShowQuota
     ? [
@@ -781,6 +802,17 @@ function AccountRow({
           <Power size={16} />
           切换
         </button>
+        {canRelogin ? (
+          <button
+            className="primary-button"
+            aria-label={`重新登录 ${identity.name}`}
+            onClick={onRelogin}
+            disabled={disabled}
+          >
+            <LogIn size={16} />
+            重新登录
+          </button>
+        ) : null}
         <button className="icon-button" aria-label={`打开 ${identity.name} 配置目录`} onClick={onOpenDirectory} disabled={disabled}>
           <FolderOpen size={16} />
         </button>
