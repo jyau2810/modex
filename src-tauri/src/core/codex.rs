@@ -10,7 +10,9 @@ use tempfile::TempDir;
 use super::app_config::{AppIdentity, AppSettings};
 use super::auth::plan_label;
 use super::quota::{snapshot_from_rate_limits, QuotaSnapshot};
-use super::sync::sync_identity_auth;
+use super::sync::{
+    history_sync_provider_for_identity, sync_identity_auth, sync_source_history_provider,
+};
 use super::{ModexError, ModexResult};
 
 const DEFAULT_CODEX_APP_CLI: &str = "/Applications/Codex.app/Contents/Resources/codex";
@@ -22,6 +24,11 @@ pub struct ProgramInvocation {
     pub program: PathBuf,
     pub args: Vec<String>,
     pub envs: Vec<(String, String)>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PrepareIdentityOutcome {
+    pub history_warning: Option<String>,
 }
 
 pub fn run_login(settings: &AppSettings, identity: &AppIdentity) -> ModexResult<()> {
@@ -85,12 +92,15 @@ pub fn run_api_key_login(
     }
 }
 
-pub fn open_codex_app(settings: &AppSettings, identity: &AppIdentity) -> ModexResult<()> {
+pub fn open_codex_app(
+    settings: &AppSettings,
+    identity: &AppIdentity,
+) -> ModexResult<PrepareIdentityOutcome> {
     open_codex_app_with_operations(
         settings,
         identity,
         quit_codex_app_if_running,
-        sync_identity_auth,
+        prepare_identity_for_launch,
         spawn_program,
     )
 }
@@ -99,26 +109,39 @@ fn open_codex_app_with_operations(
     settings: &AppSettings,
     identity: &AppIdentity,
     quit: impl FnOnce(&AppSettings) -> ModexResult<()>,
-    sync: impl FnOnce(&Path, &Path) -> ModexResult<PathBuf>,
+    prepare: impl FnOnce(&AppSettings, &AppIdentity) -> ModexResult<PrepareIdentityOutcome>,
     launch: impl FnOnce(ProgramInvocation) -> ModexResult<()>,
-) -> ModexResult<()> {
+) -> ModexResult<PrepareIdentityOutcome> {
     #[cfg(target_os = "macos")]
     quit(settings)?;
     #[cfg(not(target_os = "macos"))]
     let _ = quit;
-    sync(&settings.source_home, &identity.codex_home)?;
-    sync_plugin_registration_config(&settings.source_home, &identity.codex_home)?;
-    apply_identity_runtime_config(settings, identity)?;
-    launch(open_codex_app_launch_command(settings))
+    let outcome = prepare(settings, identity)?;
+    launch(open_codex_app_launch_command(settings))?;
+    Ok(outcome)
 }
 
 pub fn prepare_identity_for_launch(
     settings: &AppSettings,
     identity: &AppIdentity,
-) -> ModexResult<()> {
+) -> ModexResult<PrepareIdentityOutcome> {
     sync_identity_auth(&settings.source_home, &identity.codex_home)?;
     sync_plugin_registration_config(&settings.source_home, &identity.codex_home)?;
-    apply_identity_runtime_config(settings, identity)
+    apply_identity_runtime_config(settings, identity)?;
+    let mut outcome = PrepareIdentityOutcome::default();
+    let provider = history_sync_provider_for_identity(identity);
+    match sync_source_history_provider(&settings.source_home, provider) {
+        Ok(history_outcome) => {
+            if let Some(warning) = history_outcome.encrypted_content_warning {
+                eprintln!("Modex history provider sync warning: {warning}");
+                outcome.history_warning = Some(warning);
+            }
+        }
+        Err(error) => {
+            eprintln!("Modex history provider sync skipped: {error}");
+        }
+    }
+    Ok(outcome)
 }
 
 pub fn apply_identity_runtime_config(
@@ -701,7 +724,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn macos_switch_does_not_sync_auth_or_launch_when_codex_refuses_to_quit() {
+    fn macos_switch_does_not_prepare_or_launch_when_codex_refuses_to_quit() {
         let events = RefCell::new(Vec::new());
         let settings = AppSettings::default_for_home(PathBuf::from("/tmp/modex-test"));
         let identity = identity_at("/tmp/modex-test/.modex/new");
@@ -713,9 +736,9 @@ mod tests {
                 events.borrow_mut().push("quit");
                 Err(ModexError::from("quit canceled"))
             },
-            |_source, _identity| {
-                events.borrow_mut().push("sync");
-                Ok(PathBuf::from("/tmp/modex-test/source/auth.json"))
+            |_settings, _identity| {
+                events.borrow_mut().push("prepare");
+                Ok(PrepareIdentityOutcome::default())
             },
             |_invocation| {
                 events.borrow_mut().push("launch");
@@ -728,7 +751,7 @@ mod tests {
     }
 
     #[test]
-    fn macos_switch_syncs_auth_only_after_codex_has_quit() {
+    fn macos_switch_prepares_identity_only_after_codex_has_quit() {
         let events = RefCell::new(Vec::new());
         let settings = AppSettings::default_for_home(PathBuf::from("/tmp/modex-test"));
         let identity = identity_at("/tmp/modex-test/.modex/new");
@@ -740,9 +763,9 @@ mod tests {
                 events.borrow_mut().push("quit");
                 Ok(())
             },
-            |_source, _identity| {
-                events.borrow_mut().push("sync");
-                Ok(PathBuf::from("/tmp/modex-test/source/auth.json"))
+            |_settings, _identity| {
+                events.borrow_mut().push("prepare");
+                Ok(PrepareIdentityOutcome::default())
             },
             |_invocation| {
                 events.borrow_mut().push("launch");
@@ -751,7 +774,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(events.into_inner(), vec!["quit", "sync", "launch"]);
+        assert_eq!(events.into_inner(), vec!["quit", "prepare", "launch"]);
     }
 
     fn identity_at(path: &str) -> AppIdentity {

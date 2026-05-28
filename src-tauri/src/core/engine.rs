@@ -354,12 +354,14 @@ impl AppEngine {
                 message: "正在打开 Codex".to_string(),
             });
         }
-        open_codex_app(&self.settings, &identity)?;
+        let prepare_outcome = open_codex_app(&self.settings, &identity)?;
         self.set_current_identity(name)?;
-        Ok(ActionResult {
-            ok: true,
-            message: format!("正在切换到账号：{name}"),
-        })
+        let mut message = format!("正在切换到账号：{name}");
+        if let Some(warning) = prepare_outcome.history_warning {
+            message.push('\n');
+            message.push_str(&warning);
+        }
+        Ok(ActionResult { ok: true, message })
     }
 
     pub fn refresh_identity(&mut self, name: &str) -> ModexResult<IdentityView> {
