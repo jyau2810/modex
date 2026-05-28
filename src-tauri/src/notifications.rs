@@ -269,7 +269,7 @@ fn refresh_error_changed(previous: Option<&IdentityView>, current: &IdentityView
 }
 
 fn quota_recovered(previous: Option<&IdentityView>, current: &IdentityView) -> bool {
-    previous.is_some_and(|identity| identity.quota.status == "limited")
+    previous.is_some_and(|identity| identity.quota.status != "available")
         && current.quota.status == "available"
 }
 
@@ -345,22 +345,36 @@ mod tests {
     }
 
     #[test]
-    fn plans_quota_recovered_only_when_limited_becomes_available() {
+    fn plans_quota_recovered_when_any_non_available_status_becomes_available() {
         let before = vec![
-            identity("recovered@example.com", "limited", None, true, false),
+            identity("limited@example.com", "limited", None, true, false),
+            identity("error@example.com", "error", Some("timed out"), true, false),
+            identity("unknown@example.com", "unknown", None, true, false),
             identity("still-ok@example.com", "available", None, true, false),
         ];
         let after = vec![
-            identity("recovered@example.com", "available", None, true, false),
+            identity("limited@example.com", "available", None, true, false),
+            identity("error@example.com", "available", None, true, false),
+            identity("unknown@example.com", "available", None, true, false),
             identity("still-ok@example.com", "available", None, true, false),
         ];
 
         assert_eq!(
             refresh_notifications(&before, &after),
-            vec![NotificationSpec {
-                title: "额度已恢复".to_string(),
-                body: "recovered@example.com 额度已恢复，可以继续使用。".to_string(),
-            }]
+            vec![
+                NotificationSpec {
+                    title: "额度已恢复".to_string(),
+                    body: "limited@example.com 额度已恢复，可以继续使用。".to_string(),
+                },
+                NotificationSpec {
+                    title: "额度已恢复".to_string(),
+                    body: "error@example.com 额度已恢复，可以继续使用。".to_string(),
+                },
+                NotificationSpec {
+                    title: "额度已恢复".to_string(),
+                    body: "unknown@example.com 额度已恢复，可以继续使用。".to_string(),
+                },
+            ]
         );
     }
 
