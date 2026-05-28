@@ -27,4 +27,5 @@ export const modexApi = {
   runDailyWakeNow: () => invoke<ActionResult>("run_daily_wake_now"),
   getRecentLogEntries: () => invoke<AppLogEntry[]>("get_recent_log_entries"),
   openIdentityDirectory: (name: string) => invoke<ActionResult>("open_identity_directory", { name }),
+  patchCodexPlugins: () => invoke<ActionResult>("patch_codex_plugins"),
 };

@@ -13,6 +13,7 @@ import {
   RefreshCw,
   Settings,
   Trash2,
+  Wrench,
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -462,6 +463,16 @@ function App() {
                   },
                 )
               }
+              onPatchCodexPlugins={() =>
+                runAction("patch-codex-plugins", () => modexApi.patchCodexPlugins(), {
+                  failureNoticeTitle: "Codex 插件入口 patch 失败",
+                  reload: false,
+                  successNotice: {
+                    title: "Codex 插件入口已 patch",
+                    message: "已关闭 asar 完整性校验、重新签名并重启 Codex。",
+                  },
+                })
+              }
             />
           ) : appState.identities.length > 0 ? (
             <AccountWorkbench
@@ -830,12 +841,14 @@ function SettingsView({
   onSave,
   onSaveWake,
   onRunWakeNow,
+  onPatchCodexPlugins,
 }: {
   appState: AppSettings;
   busy: boolean;
   onSave: (patch: SettingsPatch) => void;
   onSaveWake: (dailyWake: DailyWakeSettings) => void;
   onRunWakeNow: (dailyWake: DailyWakeSettings) => void;
+  onPatchCodexPlugins: () => void;
 }) {
   const [form, setForm] = useState({
     codexBinary: appState.codexBinary,
@@ -933,6 +946,10 @@ function SettingsView({
         disabled={busy}
       >
         保存全局设置
+      </button>
+      <button className="icon-button settings-save" onClick={onPatchCodexPlugins} disabled={busy}>
+        <Wrench size={15} />
+        Patch Codex 插件入口
       </button>
       <div className="settings-divider" />
       <div className="switch-field">

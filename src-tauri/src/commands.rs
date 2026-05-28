@@ -10,7 +10,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::core::app_config::{AppIdentity, AppSettings, DailyWakeSettings, IdentityAuthType};
 use crate::core::auth::{auth_plan_type, plan_label};
-use crate::core::codex::read_quota_snapshot;
+use crate::core::codex::{patch_codex_plugin_auth_gate_and_restart, read_quota_snapshot};
 use crate::core::engine::{
     ActionResult, AppEngine, AppViewState, IdentityView, ImportIdentityResult, SettingsPatch,
 };
@@ -281,6 +281,20 @@ pub async fn open_identity_directory(app: AppHandle, name: String) -> Result<Act
         Ok(ActionResult {
             ok: true,
             message: "已打开账号目录".to_string(),
+        })
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn patch_codex_plugins(app: AppHandle) -> Result<ActionResult, String> {
+    run_blocking(move || {
+        let state = app.state::<ModexState>();
+        let settings = with_engine_ref(state.inner(), |engine| Ok(engine.settings().clone()))?;
+        patch_codex_plugin_auth_gate_and_restart(&settings).map_err(|error| error.to_string())?;
+        Ok(ActionResult {
+            ok: true,
+            message: "Codex 插件入口已 patch，并已重新启动 Codex。".to_string(),
         })
     })
     .await

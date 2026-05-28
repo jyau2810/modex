@@ -21,6 +21,7 @@ const mockApi = vi.hoisted(() => ({
   runDailyWakeNow: vi.fn(),
   getRecentLogEntries: vi.fn(),
   openIdentityDirectory: vi.fn(),
+  patchCodexPlugins: vi.fn(),
 }));
 
 const eventMocks = vi.hoisted(() => ({
@@ -1069,6 +1070,20 @@ describe("App", () => {
 
     expect(await screen.findByRole("status")).toHaveTextContent("全局设置已保存");
     expect(mockApi.getAppState).toHaveBeenCalledTimes(1);
+  });
+
+  it("patches the Codex plugin entry from settings", async () => {
+    mockApi.getAppState.mockResolvedValue(state());
+    mockApi.patchCodexPlugins.mockResolvedValue({ ok: true, message: "Codex 已重新启动" });
+
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "Modex", level: 1 });
+    await userEvent.click(screen.getByRole("button", { name: "打开全局设置" }));
+    await userEvent.click(screen.getByRole("button", { name: "Patch Codex 插件入口" }));
+
+    await waitFor(() => expect(mockApi.patchCodexPlugins).toHaveBeenCalledTimes(1));
+    expect(await screen.findByRole("status")).toHaveTextContent("Codex 插件入口已 patch");
   });
 
   it("renders and saves daily wake settings", async () => {

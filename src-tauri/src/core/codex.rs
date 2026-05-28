@@ -18,6 +18,9 @@ use super::{ModexError, ModexResult};
 const DEFAULT_CODEX_APP_CLI: &str = "/Applications/Codex.app/Contents/Resources/codex";
 const MODEX_API_KEY_PROVIDER_ID: &str = "modex-api-key";
 const MODEX_API_KEY_PROVIDER_NAME: &str = "Modex API Key";
+const CODEX_PLUGIN_AUTH_GATE_ORIGINAL: &[u8] =
+    b"function e(e){return e!==`chatgpt`}export{e as t};";
+const CODEX_PLUGIN_AUTH_GATE_PATCHED: &[u8] = b"function e(e){return false        }export{e as t};";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProgramInvocation {
@@ -487,6 +490,168 @@ pub fn activate_codex_app(settings: &AppSettings) -> ModexResult<()> {
     }
 }
 
+#[cfg(target_os = "macos")]
+pub fn patch_codex_plugin_auth_gate_and_restart(settings: &AppSettings) -> ModexResult<()> {
+    let app_bundle = macos_codex_app_bundle_path(&settings.app_name);
+    if !app_bundle.exists() {
+        return Err(ModexError::from(format!(
+            "未找到 Codex App：{}",
+            app_bundle.display()
+        )));
+    }
+
+    let asar_path = app_bundle.join("Contents/Resources/app.asar");
+    if !asar_path.is_file() {
+        return Err(ModexError::from(format!(
+            "未找到 Codex app.asar：{}",
+            asar_path.display()
+        )));
+    }
+
+    quit_codex_app_if_running(settings)?;
+    let _changed = patch_plugin_auth_gate_file(&asar_path)?;
+    run_checked_invocation(
+        electron_fuses_disable_asar_integrity_invocation(&app_bundle),
+        "关闭 Electron asar 完整性校验失败",
+    )?;
+    run_checked_invocation(
+        ad_hoc_codesign_app_invocation(&app_bundle),
+        "重新签名 Codex App 失败",
+    )?;
+    spawn_program(ProgramInvocation {
+        program: PathBuf::from("open"),
+        args: vec![app_bundle.display().to_string()],
+        envs: Vec::new(),
+    })?;
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn patch_codex_plugin_auth_gate_and_restart(_settings: &AppSettings) -> ModexResult<()> {
+    Err(ModexError::from(
+        "Codex App 插件入口 patch 目前只支持 macOS。",
+    ))
+}
+
+#[cfg(target_os = "macos")]
+fn macos_codex_app_bundle_path(app_name: &str) -> PathBuf {
+    let app_name = app_name.trim();
+    if app_name.contains('/') {
+        return PathBuf::from(app_name);
+    }
+    let app_name = app_name.strip_suffix(".app").unwrap_or(app_name);
+    PathBuf::from("/Applications").join(format!("{app_name}.app"))
+}
+
+fn patch_plugin_auth_gate_file(path: &Path) -> ModexResult<bool> {
+    let mut bytes = std::fs::read(path)?;
+    let changed = patch_plugin_auth_gate_bytes(&mut bytes)?;
+    if changed {
+        std::fs::write(path, bytes)?;
+    }
+    Ok(changed)
+}
+
+fn patch_plugin_auth_gate_bytes(bytes: &mut [u8]) -> ModexResult<bool> {
+    debug_assert_eq!(
+        CODEX_PLUGIN_AUTH_GATE_ORIGINAL.len(),
+        CODEX_PLUGIN_AUTH_GATE_PATCHED.len()
+    );
+    let original_count = count_subslice(bytes, CODEX_PLUGIN_AUTH_GATE_ORIGINAL);
+    let patched_count = count_subslice(bytes, CODEX_PLUGIN_AUTH_GATE_PATCHED);
+
+    match (original_count, patched_count) {
+        (1, 0) => {
+            let offset = find_subslice(bytes, CODEX_PLUGIN_AUTH_GATE_ORIGINAL)
+                .ok_or_else(|| ModexError::from("未找到 Codex 插件入口判断逻辑"))?;
+            bytes[offset..offset + CODEX_PLUGIN_AUTH_GATE_PATCHED.len()]
+                .copy_from_slice(CODEX_PLUGIN_AUTH_GATE_PATCHED);
+            Ok(true)
+        }
+        (0, 1) => Ok(false),
+        (0, 0) => Err(ModexError::from(
+            "未找到可 patch 的 Codex 插件入口逻辑，当前 Codex 版本可能已变更。",
+        )),
+        _ => Err(ModexError::from(
+            "Codex 插件入口逻辑匹配结果不唯一，已取消 patch。",
+        )),
+    }
+}
+
+fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() {
+        return Some(0);
+    }
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
+}
+
+fn count_subslice(haystack: &[u8], needle: &[u8]) -> usize {
+    if needle.is_empty() {
+        return 0;
+    }
+    haystack
+        .windows(needle.len())
+        .filter(|window| *window == needle)
+        .count()
+}
+
+#[cfg(target_os = "macos")]
+fn electron_fuses_disable_asar_integrity_invocation(app_bundle: &Path) -> ProgramInvocation {
+    let app_bundle = shell_quote(&app_bundle.to_string_lossy());
+    ProgramInvocation {
+        program: PathBuf::from("/bin/zsh"),
+        args: vec![
+            "-lc".to_string(),
+            format!(
+                "npx --yes @electron/fuses write --app {app_bundle} EnableEmbeddedAsarIntegrityValidation=off"
+            ),
+        ],
+        envs: Vec::new(),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', r#"'\''"#))
+}
+
+#[cfg(target_os = "macos")]
+fn ad_hoc_codesign_app_invocation(app_bundle: &Path) -> ProgramInvocation {
+    ProgramInvocation {
+        program: PathBuf::from("codesign"),
+        args: vec![
+            "--force".to_string(),
+            "--deep".to_string(),
+            "--sign".to_string(),
+            "-".to_string(),
+            app_bundle.display().to_string(),
+        ],
+        envs: Vec::new(),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn run_checked_invocation(invocation: ProgramInvocation, context: &str) -> ModexResult<()> {
+    let output = Command::new(&invocation.program)
+        .args(&invocation.args)
+        .envs(invocation.envs)
+        .output()?;
+    if output.status.success() {
+        return Ok(());
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let detail = if stderr.is_empty() { stdout } else { stderr };
+    if detail.is_empty() {
+        Err(ModexError::from(context.to_string()))
+    } else {
+        Err(ModexError::from(format!("{context}：{detail}")))
+    }
+}
+
 pub fn read_quota_snapshot(
     settings: &AppSettings,
     identity: &AppIdentity,
@@ -775,6 +940,40 @@ mod tests {
         .unwrap();
 
         assert_eq!(events.into_inner(), vec!["quit", "prepare", "launch"]);
+    }
+
+    #[test]
+    fn plugin_auth_gate_patch_replaces_original_gate_once() {
+        let mut bytes = b"before function e(e){return e!==`chatgpt`}export{e as t}; after".to_vec();
+
+        assert_eq!(patch_plugin_auth_gate_bytes(&mut bytes).unwrap(), true);
+
+        let next = String::from_utf8(bytes).unwrap();
+        assert!(!next.contains("function e(e){return e!==`chatgpt`}export{e as t};"));
+        assert!(next.contains("function e(e){return false        }export{e as t};"));
+    }
+
+    #[test]
+    fn plugin_auth_gate_patch_is_idempotent() {
+        let mut bytes = b"before function e(e){return false        }export{e as t}; after".to_vec();
+
+        assert_eq!(patch_plugin_auth_gate_bytes(&mut bytes).unwrap(), false);
+    }
+
+    #[test]
+    fn disable_asar_integrity_invocation_keeps_app_asar_loading_enabled() {
+        let invocation = electron_fuses_disable_asar_integrity_invocation(Path::new(
+            "/Applications/Codex App.app",
+        ));
+
+        assert_eq!(invocation.program, PathBuf::from("/bin/zsh"));
+        assert_eq!(
+            invocation.args,
+            vec![
+                "-lc",
+                "npx --yes @electron/fuses write --app '/Applications/Codex App.app' EnableEmbeddedAsarIntegrityValidation=off"
+            ]
+        );
     }
 
     fn identity_at(path: &str) -> AppIdentity {
