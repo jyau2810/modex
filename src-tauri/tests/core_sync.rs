@@ -91,14 +91,17 @@ fn sync_source_history_provider_repairs_rollout_and_sqlite_visibility_metadata()
         .encrypted_content_warning
         .as_deref()
         .unwrap()
-        .contains("invalid_encrypted_content"));
+        .contains("removed 1 incompatible encrypted_content field"));
     assert_eq!(
         rollout_provider(rollout.path()).as_deref(),
         Some("modex-api-key")
     );
     assert!(fs::read_to_string(rollout.path())
         .unwrap()
-        .contains(r#""encrypted_content":"ciphertext-from-openai""#));
+        .contains(r#""type":"reasoning""#));
+    assert!(!fs::read_to_string(rollout.path())
+        .unwrap()
+        .contains("encrypted_content"));
     assert_eq!(
         fs::metadata(rollout.path()).unwrap().modified().ok(),
         Some(original_mtime)
@@ -225,7 +228,7 @@ fn prepare_identity_for_launch_returns_encrypted_history_warning() {
         .history_warning
         .as_deref()
         .unwrap()
-        .contains("invalid_encrypted_content"));
+        .contains("removed 1 incompatible encrypted_content field"));
 }
 
 #[test]
@@ -399,6 +402,7 @@ fn current_rollout_jsonl(
                 "timestamp": "2026-05-28T02:02:00.000Z",
                 "type": "response_item",
                 "payload": {
+                    "type": "reasoning",
                     "encrypted_content": "ciphertext-from-openai"
                 }
             })

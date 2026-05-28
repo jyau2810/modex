@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::SystemTime;
 
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
@@ -36,6 +37,7 @@ impl HistorySyncProvider {
 pub struct HistorySyncOutcome {
     pub changed_session_files: usize,
     pub skipped_session_files: usize,
+    pub sanitized_encrypted_content_fields: usize,
     pub sqlite_present: bool,
     pub sqlite_provider_rows_updated: usize,
     pub sqlite_user_event_rows_updated: usize,
@@ -85,18 +87,20 @@ pub fn sync_source_history_provider(
 ) -> ModexResult<HistorySyncOutcome> {
     let target_provider = provider.as_str();
     let scan = collect_session_changes(source_home, target_provider)?;
-    let encrypted_content_warning =
-        build_encrypted_content_warning(&scan.encrypted_content_counts, target_provider);
-    let mut outcome = HistorySyncOutcome {
-        encrypted_content_warning,
-        ..HistorySyncOutcome::default()
-    };
+    let mut outcome = HistorySyncOutcome::default();
 
     let state_path = source_home.join(STATE_DB_NAME);
     if !state_path.exists() {
         let rollout_outcome = apply_rollout_rewrites(&scan.changes)?;
         outcome.changed_session_files = rollout_outcome.applied.len();
         outcome.skipped_session_files = rollout_outcome.skipped;
+        outcome.sanitized_encrypted_content_fields =
+            rollout_outcome.sanitized_encrypted_content_fields;
+        outcome.encrypted_content_warning = build_encrypted_content_warning(
+            &scan.encrypted_content_counts,
+            target_provider,
+            outcome.sanitized_encrypted_content_fields,
+        );
         let workspace_outcome = sync_workspace_roots(source_home, &scan.thread_cwd_by_id)?;
         outcome.updated_workspace_roots = workspace_outcome.updated_workspace_roots;
         outcome.saved_workspace_root_count = workspace_outcome.saved_workspace_root_count;
@@ -118,16 +122,23 @@ pub fn sync_source_history_provider(
             &scan.thread_cwd_by_id,
         )?;
         let rollout_outcome = apply_rollout_rewrites(&scan.changes)?;
-        applied_rollouts = rollout_outcome.applied;
+        applied_rollouts = rollout_outcome.applied.clone();
         let workspace_outcome = sync_workspace_roots(source_home, &scan.thread_cwd_by_id)?;
         transaction.commit().map_err(sqlite_error)?;
-        Ok((sqlite_outcome, rollout_outcome.skipped, workspace_outcome))
+        Ok((sqlite_outcome, rollout_outcome, workspace_outcome))
     })();
 
     match result {
-        Ok((sqlite_outcome, skipped_session_files, workspace_outcome)) => {
+        Ok((sqlite_outcome, rollout_outcome, workspace_outcome)) => {
             outcome.changed_session_files = applied_rollouts.len();
-            outcome.skipped_session_files = skipped_session_files;
+            outcome.skipped_session_files = rollout_outcome.skipped;
+            outcome.sanitized_encrypted_content_fields =
+                rollout_outcome.sanitized_encrypted_content_fields;
+            outcome.encrypted_content_warning = build_encrypted_content_warning(
+                &scan.encrypted_content_counts,
+                target_provider,
+                outcome.sanitized_encrypted_content_fields,
+            );
             outcome.sqlite_provider_rows_updated = sqlite_outcome.provider_rows_updated;
             outcome.sqlite_user_event_rows_updated = sqlite_outcome.user_event_rows_updated;
             outcome.sqlite_cwd_rows_updated = sqlite_outcome.cwd_rows_updated;
@@ -338,12 +349,15 @@ fn collect_rollout_change(
         Value::String(target_provider.to_string()),
     );
     let updated_first_line = serde_json::to_string(&first_line_json)?;
+    let remove_encrypted_content = contents.contains("encrypted_content");
     scan.changes.push(RolloutChange {
         path: path.to_path_buf(),
         original_first_line: record.first_line,
         original_separator: record.separator,
         snapshot,
         updated_first_line,
+        remove_encrypted_content,
+        original_contents: remove_encrypted_content.then(|| Arc::<str>::from(contents.as_str())),
     });
     Ok(())
 }
@@ -351,17 +365,26 @@ fn collect_rollout_change(
 fn apply_rollout_rewrites(changes: &[RolloutChange]) -> ModexResult<RolloutRewriteOutcome> {
     let mut applied = Vec::new();
     let mut skipped = 0;
+    let mut sanitized_encrypted_content_fields = 0;
     for change in changes {
-        match write_rollout_first_line_if_unchanged(change, &change.updated_first_line) {
-            Ok(true) => applied.push(change.clone()),
-            Ok(false) => skipped += 1,
+        match write_rollout_if_unchanged(change, &change.updated_first_line) {
+            Ok(Some(write_outcome)) => {
+                sanitized_encrypted_content_fields +=
+                    write_outcome.sanitized_encrypted_content_fields;
+                applied.push(change.clone());
+            }
+            Ok(None) => skipped += 1,
             Err(error) => {
                 restore_rollout_first_lines(&applied)?;
                 return Err(error);
             }
         }
     }
-    Ok(RolloutRewriteOutcome { applied, skipped })
+    Ok(RolloutRewriteOutcome {
+        applied,
+        skipped,
+        sanitized_encrypted_content_fields,
+    })
 }
 
 fn restore_rollout_first_lines(changes: &[RolloutChange]) -> ModexResult<()> {
@@ -371,32 +394,44 @@ fn restore_rollout_first_lines(changes: &[RolloutChange]) -> ModexResult<()> {
     Ok(())
 }
 
-fn write_rollout_first_line_if_unchanged(
+fn write_rollout_if_unchanged(
     change: &RolloutChange,
     first_line: &str,
-) -> ModexResult<bool> {
+) -> ModexResult<Option<RolloutWriteOutcome>> {
     if !change.snapshot.matches_path(&change.path)? {
-        return Ok(false);
+        return Ok(None);
     }
     let current = fs::read_to_string(&change.path)?;
     let Some(record) = FirstLineRecord::from_contents(&current) else {
-        return Ok(false);
+        return Ok(None);
     };
     if record.first_line != change.original_first_line
         || record.separator != change.original_separator
     {
-        return Ok(false);
+        return Ok(None);
     }
-    let next = build_rollout_contents(first_line, &record.separator, &record.rest);
+    let (next, sanitized_encrypted_content_fields) = build_rollout_contents(
+        first_line,
+        &record.separator,
+        &record.rest,
+        change.remove_encrypted_content,
+    )?;
     if !change.snapshot.matches_path(&change.path)? {
-        return Ok(false);
+        return Ok(None);
     }
     write_rollout_contents(change, &next)?;
     restore_rollout_mtime(&change.path, change.snapshot.modified);
-    Ok(true)
+    Ok(Some(RolloutWriteOutcome {
+        sanitized_encrypted_content_fields,
+    }))
 }
 
 fn restore_rollout_first_line(change: &RolloutChange) -> ModexResult<()> {
+    if let Some(original_contents) = &change.original_contents {
+        write_rollout_contents(change, original_contents)?;
+        restore_rollout_mtime(&change.path, change.snapshot.modified);
+        return Ok(());
+    }
     let current = fs::read_to_string(&change.path)?;
     let Some(record) = FirstLineRecord::from_contents(&current) else {
         return Ok(());
@@ -406,18 +441,80 @@ fn restore_rollout_first_line(change: &RolloutChange) -> ModexResult<()> {
     } else {
         &record.separator
     };
-    let next = build_rollout_contents(&change.original_first_line, separator, &record.rest);
+    let (next, _) =
+        build_rollout_contents(&change.original_first_line, separator, &record.rest, false)?;
     write_rollout_contents(change, &next)?;
     restore_rollout_mtime(&change.path, change.snapshot.modified);
     Ok(())
 }
 
-fn build_rollout_contents(first_line: &str, separator: &str, rest: &str) -> String {
+fn build_rollout_contents(
+    first_line: &str,
+    separator: &str,
+    rest: &str,
+    remove_encrypted_content: bool,
+) -> ModexResult<(String, usize)> {
     let mut next = String::new();
     next.push_str(first_line);
     next.push_str(separator);
-    next.push_str(rest);
-    next
+    if remove_encrypted_content {
+        let (sanitized_rest, sanitized_encrypted_content_fields) =
+            remove_encrypted_content_from_jsonl(rest)?;
+        next.push_str(&sanitized_rest);
+        Ok((next, sanitized_encrypted_content_fields))
+    } else {
+        next.push_str(rest);
+        Ok((next, 0))
+    }
+}
+
+fn remove_encrypted_content_from_jsonl(contents: &str) -> ModexResult<(String, usize)> {
+    let mut sanitized = String::with_capacity(contents.len());
+    let mut removed_fields = 0;
+    for line in contents.split_inclusive('\n') {
+        let (body, ending) = split_line_ending(line);
+        if !body.contains("encrypted_content") {
+            sanitized.push_str(line);
+            continue;
+        }
+        let Ok(mut value) = serde_json::from_str::<Value>(body) else {
+            sanitized.push_str(line);
+            continue;
+        };
+        let removed = remove_encrypted_content_fields(&mut value);
+        if removed == 0 {
+            sanitized.push_str(line);
+            continue;
+        }
+        sanitized.push_str(&serde_json::to_string(&value)?);
+        sanitized.push_str(ending);
+        removed_fields += removed;
+    }
+    Ok((sanitized, removed_fields))
+}
+
+fn split_line_ending(line: &str) -> (&str, &str) {
+    if let Some(body) = line.strip_suffix("\r\n") {
+        (body, "\r\n")
+    } else if let Some(body) = line.strip_suffix('\n') {
+        (body, "\n")
+    } else {
+        (line, "")
+    }
+}
+
+fn remove_encrypted_content_fields(value: &mut Value) -> usize {
+    match value {
+        Value::Object(object) => {
+            let mut removed = usize::from(object.remove("encrypted_content").is_some());
+            for value in object.values_mut() {
+                removed += remove_encrypted_content_fields(value);
+            }
+            removed
+        }
+        Value::Array(values) => values.iter_mut().map(remove_encrypted_content_fields).sum(),
+        _ => 0,
+    }
 }
 
 fn write_rollout_contents(change: &RolloutChange, contents: &str) -> ModexResult<()> {
@@ -784,6 +881,7 @@ fn record_has_user_event(record: &Value) -> bool {
 fn build_encrypted_content_warning(
     counts_by_provider: &BTreeMap<String, usize>,
     target_provider: &str,
+    sanitized_encrypted_content_fields: usize,
 ) -> Option<String> {
     let risky_providers = counts_by_provider
         .iter()
@@ -795,6 +893,12 @@ fn build_encrypted_content_warning(
         return None;
     }
     let total = counts_by_provider.values().sum::<usize>();
+    if sanitized_encrypted_content_fields > 0 {
+        return Some(format!(
+            "Modex removed {sanitized_encrypted_content_fields} incompatible encrypted_content field(s) from {total} rollout file(s) generated by provider(s) {} while switching history metadata to {target_provider}. The visible transcript was preserved so the thread can continue with the new account.",
+            risky_providers.join(", ")
+        ));
+    }
     Some(format!(
         "Encrypted content warning: {total} rollout file(s) contain encrypted_content from provider(s) {}. Visibility metadata was synchronized to {target_provider}, but continuing or compacting those histories may fail with invalid_encrypted_content.",
         risky_providers.join(", ")
@@ -812,12 +916,20 @@ struct RolloutChange {
     original_separator: String,
     snapshot: FileSnapshot,
     updated_first_line: String,
+    remove_encrypted_content: bool,
+    original_contents: Option<Arc<str>>,
 }
 
 #[derive(Debug, Default)]
 struct RolloutRewriteOutcome {
     applied: Vec<RolloutChange>,
     skipped: usize,
+    sanitized_encrypted_content_fields: usize,
+}
+
+#[derive(Debug, Default)]
+struct RolloutWriteOutcome {
+    sanitized_encrypted_content_fields: usize,
 }
 
 #[derive(Debug, Default)]
