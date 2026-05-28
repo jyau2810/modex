@@ -739,6 +739,7 @@ fn run_daily_wake_job(
         );
         let mut detail = serde_json::json!({
             "trigger": mode.as_str(),
+            "wakeMethod": "appServerThreadTurn",
             "beforePrimaryPercent": before_primary,
             "afterPrimaryPercent": after_primary,
             "beforePrimaryResetAt": before_primary_reset_at,
@@ -921,7 +922,7 @@ fn wake_audit_entry(
                 reason.as_deref().unwrap_or("unknown")
             ),
             "woke" => format!("{} 已完成每日唤醒", identity.name),
-            "unverified" => format!("{} 命令成功，但额度窗口未确认", identity.name),
+            "unverified" => format!("{} 会话完成，但额度窗口未确认", identity.name),
             _ => format!("{} 每日唤醒已停止", identity.name),
         },
         decision: decision.to_string(),
