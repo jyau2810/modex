@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -15,7 +15,7 @@ use super::auth::{
 use super::codex::{
     activate_codex_app, open_codex_app, read_quota_snapshot, run_api_key_login, run_login,
 };
-use super::identity_home::{default_new_identity, random_digits};
+use super::identity_home::{default_new_identity, is_managed_identity_home, random_digits};
 use super::quota::{quota_display, QuotaDisplay, QuotaSnapshot};
 use super::{ModexError, ModexResult};
 
@@ -276,7 +276,7 @@ impl AppEngine {
         let Some(index) = self.identity_index(name) else {
             return Err(ModexError::from(format!("未知身份：{name}")));
         };
-        self.settings.identities.remove(index);
+        let identity = self.settings.identities.remove(index);
         self.snapshots.remove(name);
         self.errors.remove(name);
         self.expired_identity_names.remove(name);
@@ -287,10 +287,40 @@ impl AppEngine {
             self.settings.has_completed_setup = false;
         }
         self.save()?;
+        remove_managed_identity_home(&identity.codex_home, &managed_home_root(&self.settings))?;
         Ok(ActionResult {
             ok: true,
             message: format!("已删除账号：{name}"),
         })
+    }
+
+    pub fn cleanup_unreferenced_managed_homes(&self) -> ModexResult<Vec<PathBuf>> {
+        let managed_root = managed_home_root(&self.settings);
+        let managed_dir = managed_root.join(".modex");
+        if !managed_dir.is_dir() {
+            return Ok(Vec::new());
+        }
+
+        let retained_homes = retained_identity_homes(&self.settings);
+        let mut entries = fs::read_dir(&managed_dir)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(ModexError::from)?;
+        entries.sort_by_key(|entry| entry.path());
+
+        let mut removed = Vec::new();
+        for entry in entries {
+            let path = entry.path();
+            if !entry.file_type()?.is_dir() || !is_managed_identity_home(&path, &managed_root) {
+                continue;
+            }
+            if retained_homes.contains(&normalize_path(&path)) {
+                continue;
+            }
+            remove_managed_identity_home(&path, &managed_root)?;
+            removed.push(path);
+        }
+
+        Ok(removed)
     }
 
     pub fn update_settings(&mut self, patch: SettingsPatch) -> ModexResult<AppViewState> {
@@ -628,6 +658,31 @@ fn managed_home_root(settings: &AppSettings) -> PathBuf {
         .map(PathBuf::from)
         .or_else(dirs::home_dir)
         .unwrap_or_else(|| PathBuf::from("."))
+}
+
+fn retained_identity_homes(settings: &AppSettings) -> HashSet<PathBuf> {
+    let mut retained = settings
+        .identities
+        .iter()
+        .map(|identity| normalize_path(&identity.codex_home))
+        .collect::<HashSet<_>>();
+    retained.insert(normalize_path(&settings.source_home));
+    retained
+}
+
+fn normalize_path(path: &Path) -> PathBuf {
+    path.components().collect()
+}
+
+fn remove_managed_identity_home(identity_home: &Path, managed_root: &Path) -> ModexResult<bool> {
+    if !is_managed_identity_home(identity_home, managed_root) {
+        return Ok(false);
+    }
+    match fs::remove_dir_all(identity_home) {
+        Ok(()) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(ModexError::from(error)),
+    }
 }
 
 fn is_login_expired_error(error: &str) -> bool {

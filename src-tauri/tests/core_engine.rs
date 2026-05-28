@@ -521,6 +521,66 @@ fn delete_identity_clears_current_identity_when_deleted() {
 }
 
 #[test]
+fn delete_identity_removes_managed_identity_home() {
+    let temp = assert_fs::TempDir::new().unwrap();
+    let config = temp.child("config.json");
+    let identity_home = temp.path().join(".modex/123456789012");
+    std::fs::create_dir_all(identity_home.join("sessions")).unwrap();
+    std::fs::write(identity_home.join("auth.json"), "{}").unwrap();
+    std::fs::write(identity_home.join("sessions/rollout.jsonl"), "{}").unwrap();
+    let mut settings = AppSettings::default_for_home(temp.path().to_path_buf());
+    settings.identities.push(AppIdentity {
+        name: "Team".to_string(),
+        codex_home: identity_home.clone(),
+        monitor: false,
+        workspace_id: None,
+        auth_type: Default::default(),
+        api_base_url: None,
+    });
+    let mut engine = AppEngine::new(settings, config.path().to_path_buf());
+
+    engine.delete_identity("Team").unwrap();
+
+    assert!(!identity_home.exists());
+}
+
+#[test]
+fn cleanup_unreferenced_managed_homes_removes_only_orphans() {
+    let temp = assert_fs::TempDir::new().unwrap();
+    let config = temp.child("config.json");
+    let referenced_home = temp.path().join(".modex/111111111111");
+    let orphan_home = temp.path().join(".modex/222222222222");
+    let source_home = temp.path().join(".codex");
+    let non_managed_home = temp.path().join(".modex/not-managed");
+    std::fs::create_dir_all(&source_home).unwrap();
+    for home in [&referenced_home, &orphan_home, &non_managed_home] {
+        std::fs::create_dir_all(home).unwrap();
+        std::fs::write(home.join("auth.json"), "{}").unwrap();
+    }
+    std::fs::create_dir_all(orphan_home.join("sessions")).unwrap();
+    std::fs::write(orphan_home.join("sessions/rollout.jsonl"), "{}").unwrap();
+    let mut settings = AppSettings::default_for_home(temp.path().to_path_buf());
+    settings.source_home = source_home.clone();
+    settings.identities.push(AppIdentity {
+        name: "Team".to_string(),
+        codex_home: referenced_home.clone(),
+        monitor: false,
+        workspace_id: None,
+        auth_type: Default::default(),
+        api_base_url: None,
+    });
+    let engine = AppEngine::new(settings, config.path().to_path_buf());
+
+    let removed = engine.cleanup_unreferenced_managed_homes().unwrap();
+
+    assert_eq!(removed, vec![orphan_home.clone()]);
+    assert!(referenced_home.exists());
+    assert!(!orphan_home.exists());
+    assert!(source_home.exists());
+    assert!(non_managed_home.exists());
+}
+
+#[test]
 fn sync_identity_names_from_auth_persists_browser_login_result() {
     let temp = assert_fs::TempDir::new().unwrap();
     let config = temp.child("config.json");

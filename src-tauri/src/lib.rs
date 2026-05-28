@@ -62,6 +62,7 @@ pub fn run() {
             }
             tray::setup(app.app_handle())?;
             maybe_send_notification_probe(app.app_handle().clone());
+            commands::start_identity_home_cleanup(app.app_handle().clone());
             commands::start_startup_refresh(app.app_handle().clone());
             commands::start_background_monitor(app.app_handle().clone());
             commands::start_daily_wake_scheduler(app.app_handle().clone());

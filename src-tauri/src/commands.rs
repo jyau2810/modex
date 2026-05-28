@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::process::Command;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -471,6 +472,31 @@ pub fn emit_refresh_finished(app: &AppHandle) {
 
 pub fn start_startup_refresh(app: AppHandle) {
     start_refresh_all_with_events(app, "startup");
+}
+
+pub fn start_identity_home_cleanup(app: AppHandle) {
+    std::thread::spawn(move || {
+        let state = app.state::<ModexState>();
+        match cleanup_unreferenced_identity_homes(&state) {
+            Ok(removed) if !removed.is_empty() => {
+                eprintln!(
+                    "modex cleaned {} unreferenced identity homes",
+                    removed.len()
+                );
+            }
+            Ok(_) => {}
+            Err(error) => eprintln!("modex identity home cleanup failed: {error}"),
+        }
+    });
+}
+
+pub fn cleanup_unreferenced_identity_homes(state: &ModexState) -> Result<Vec<PathBuf>, String> {
+    state
+        .engine
+        .lock()
+        .map_err(|_| "Modex state lock poisoned".to_string())?
+        .cleanup_unreferenced_managed_homes()
+        .map_err(|error| error.to_string())
 }
 
 pub fn start_refresh_all_with_events(app: AppHandle, source: &'static str) {
@@ -1191,6 +1217,33 @@ mod tests {
     #[cfg(target_os = "macos")]
     fn showing_main_window_preserves_menu_bar_activation_policy() {
         assert!(!show_main_window_uses_regular_activation_policy());
+    }
+
+    #[test]
+    fn cleanup_unreferenced_identity_homes_uses_state_engine() {
+        let temp = assert_fs::TempDir::new().unwrap();
+        let referenced_home = temp.path().join(".modex/111111111111");
+        let orphan_home = temp.path().join(".modex/222222222222");
+        std::fs::create_dir_all(&referenced_home).unwrap();
+        std::fs::create_dir_all(&orphan_home).unwrap();
+        std::fs::write(referenced_home.join("auth.json"), "{}").unwrap();
+        std::fs::write(orphan_home.join("auth.json"), "{}").unwrap();
+        let mut settings = AppSettings::default_for_home(temp.path().to_path_buf());
+        settings.identities.push(AppIdentity {
+            name: "Team".to_string(),
+            codex_home: referenced_home.clone(),
+            monitor: false,
+            workspace_id: None,
+            auth_type: Default::default(),
+            api_base_url: None,
+        });
+        let state = ModexState::new(AppEngine::new(settings, temp.path().join("config.json")));
+
+        let removed = cleanup_unreferenced_identity_homes(&state).unwrap();
+
+        assert_eq!(removed, vec![orphan_home.clone()]);
+        assert!(referenced_home.exists());
+        assert!(!orphan_home.exists());
     }
 
     fn jwt_with_claims(claims: serde_json::Value) -> String {
