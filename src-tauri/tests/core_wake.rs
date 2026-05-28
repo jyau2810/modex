@@ -1,12 +1,15 @@
 use assert_fs::prelude::*;
-use modex_lib::core::app_config::DailyWakeSettings;
+use modex_lib::core::app_config::{AppIdentity, DailyWakeSettings, IdentityAuthType};
 use modex_lib::core::engine::IdentityView;
 use modex_lib::core::quota::QuotaDisplay;
 use modex_lib::core::wake::{
     append_wake_log_entry, finalize_wake_quota_evidence, primary_delta_exceeds_limit,
-    read_recent_wake_log_entries, should_wake_identity, wake_quota_evidence, WakeAuditEntry,
-    WakeDecision, WakeQuotaEvidence, WakeSkipReason, WakeThresholds,
+    read_recent_wake_log_entries, run_wake_prompt, should_wake_identity, wake_quota_evidence,
+    WakeAuditEntry, WakeDecision, WakeQuotaEvidence, WakeSkipReason, WakeThresholds,
 };
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+use std::{fs, time::Duration};
 
 #[test]
 fn wake_allows_idle_logged_in_team_account_with_weekly_budget() {
@@ -231,6 +234,102 @@ fn wake_audit_log_respects_limit() {
     let recent = read_recent_wake_log_entries(log_path.path(), 1).unwrap();
 
     assert_eq!(recent, vec![audit_entry("run-2", "woke")]);
+}
+
+#[cfg(unix)]
+#[test]
+fn wake_prompt_starts_thread_turn_without_archiving_session() {
+    let temp = assert_fs::TempDir::new().unwrap();
+    let requests_path = temp.child("requests.jsonl");
+    let script_path = temp.child("fake-codex.sh");
+    script_path
+        .write_str(&format!(
+            "#!/bin/sh
+requests_path='{}'
+while IFS= read -r line; do
+  printf '%s\n' \"$line\" >> \"$requests_path\"
+  case \"$line\" in
+    *'\"method\":\"initialize\"'*)
+      printf '%s\n' '{{\"id\":1,\"result\":{{\"serverInfo\":{{\"name\":\"fake-codex\"}}}}}}'
+      ;;
+    *'\"method\":\"thread/start\"'*)
+      printf '%s\n' '{{\"id\":2,\"result\":{{\"thread\":{{\"id\":\"thread-1\"}}}}}}'
+      ;;
+    *'\"method\":\"turn/start\"'*)
+      printf '%s\n' '{{\"id\":3,\"result\":{{\"turn\":{{\"id\":\"turn-1\"}}}}}}'
+      printf '%s\n' '{{\"method\":\"item/completed\",\"params\":{{\"threadId\":\"thread-1\",\"turnId\":\"turn-1\",\"item\":{{\"type\":\"agentMessage\",\"text\":\"OK\"}}}}}}'
+      printf '%s\n' '{{\"method\":\"turn/completed\",\"params\":{{\"threadId\":\"thread-1\",\"turn\":{{\"id\":\"turn-1\",\"status\":\"completed\"}}}}}}'
+      ;;
+    *'\"method\":\"thread/archive\"'*)
+      printf '%s\n' '{{\"id\":4,\"result\":{{}}}}'
+      ;;
+  esac
+done
+",
+            requests_path.path().display()
+        ))
+        .unwrap();
+    fs::set_permissions(script_path.path(), fs::Permissions::from_mode(0o755)).unwrap();
+
+    let identity_home = temp.child("identity-home");
+    identity_home.create_dir_all().unwrap();
+    let result = run_wake_prompt(
+        script_path.path().to_str().unwrap(),
+        &AppIdentity {
+            name: "team@example.com".to_string(),
+            codex_home: identity_home.path().to_path_buf(),
+            monitor: false,
+            workspace_id: None,
+            auth_type: IdentityAuthType::ChatGpt,
+            api_base_url: None,
+        },
+        "Good morning",
+        Duration::from_secs(2),
+    )
+    .unwrap();
+
+    let request_methods = fs::read_to_string(requests_path.path())
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .collect::<Vec<_>>();
+
+    assert_eq!(result.exit_code, Some(0));
+    assert!(!result.timed_out);
+    assert_eq!(result.thread_id.as_deref(), Some("thread-1"));
+    assert_eq!(result.last_message, "OK");
+    assert_eq!(
+        request_methods
+            .iter()
+            .map(|request| request["method"].as_str().unwrap().to_string())
+            .collect::<Vec<_>>(),
+        vec![
+            "initialize".to_string(),
+            "thread/start".to_string(),
+            "turn/start".to_string(),
+        ]
+    );
+
+    let thread_request = request_methods
+        .iter()
+        .find(|request| request["method"] == "thread/start")
+        .unwrap();
+    assert_eq!(thread_request["params"]["approvalPolicy"], "never");
+    assert_eq!(thread_request["params"]["sandbox"], "read-only");
+    assert_eq!(thread_request["params"]["threadSource"], "user");
+    assert!(thread_request["params"].get("sessionStartSource").is_none());
+    assert!(thread_request["params"].get("baseInstructions").is_none());
+    assert!(thread_request["params"].get("developerInstructions").is_none());
+
+    let turn_request = request_methods
+        .iter()
+        .find(|request| request["method"] == "turn/start")
+        .unwrap();
+    assert_eq!(turn_request["params"]["threadId"], "thread-1");
+    assert_eq!(turn_request["params"]["sandboxPolicy"]["type"], "readOnly");
+    assert_eq!(turn_request["params"]["sandboxPolicy"]["networkAccess"], false);
+    assert!(turn_request["params"].get("approvalPolicy").is_none());
+    assert!(turn_request["params"].get("effort").is_none());
 }
 
 fn identity_view(

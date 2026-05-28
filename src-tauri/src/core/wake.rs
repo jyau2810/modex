@@ -17,7 +17,6 @@ const PRIMARY_WINDOW_SECONDS: i64 = 5 * 60 * 60;
 const PRIMARY_WINDOW_ADVANCE_TOLERANCE_SECONDS: i64 = 10 * 60;
 const WAKE_THREAD_START_REQUEST_ID: u8 = 2;
 const WAKE_TURN_START_REQUEST_ID: u8 = 3;
-const WAKE_THREAD_ARCHIVE_REQUEST_ID: u8 = 4;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -73,14 +72,6 @@ pub struct WakePromptResult {
     pub stdout: String,
     pub stderr: String,
     pub thread_id: Option<String>,
-    pub archived: bool,
-    pub archive_error: Option<String>,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-struct WakeArchiveResult {
-    archived: bool,
-    error: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -296,7 +287,6 @@ pub fn run_wake_prompt(
     let mut timed_out = false;
     let mut last_message = String::new();
     let mut failure_message = String::new();
-    let mut archive_result = WakeArchiveResult::default();
 
     while !completed && !failed {
         if started.elapsed() >= timeout {
@@ -371,21 +361,6 @@ pub fn run_wake_prompt(
             }
         }
     }
-    if let Some(thread_id) = thread_id.as_deref() {
-        archive_result = match archive_wake_thread(
-            &mut stdin,
-            &stdout_reader,
-            &mut stdout_lines,
-            thread_id,
-            Duration::from_secs(2),
-        ) {
-            Ok(result) => result,
-            Err(error) => WakeArchiveResult {
-                archived: false,
-                error: Some(error.to_string()),
-            },
-        };
-    }
     if child.try_wait()?.is_none() {
         let _ = child.kill();
     }
@@ -402,8 +377,6 @@ pub fn run_wake_prompt(
         stdout: stdout_lines.join("\n"),
         stderr,
         thread_id,
-        archived: archive_result.archived,
-        archive_error: archive_result.error,
     })
 }
 
@@ -438,16 +411,6 @@ fn wake_thread_start_params(workdir: &Path) -> Value {
         "sandbox": "read-only",
         "ephemeral": false,
         "threadSource": "user",
-        "sessionStartSource": "startup",
-        "environments": [],
-        "dynamicTools": [],
-        "config": {
-            "web_search": "disabled",
-        },
-        "baseInstructions": "You are running a Modex daily wake check.",
-        "developerInstructions": "Reply exactly OK. Do not inspect files, run commands, use tools, analyze the project, or add explanation.",
-        "experimentalRawEvents": false,
-        "persistExtendedHistory": false,
     })
 }
 
@@ -459,12 +422,10 @@ fn wake_turn_start_params(thread_id: &str, message: &str) -> Value {
             "text": wake_prompt(message),
             "text_elements": [],
         }],
-        "approvalPolicy": "never",
         "sandboxPolicy": {
             "type": "readOnly",
             "networkAccess": false,
         },
-        "effort": "low",
     })
 }
 
@@ -617,94 +578,11 @@ fn matches_expected_id(message: &Value, field: &str, expected: Option<&str>) -> 
         == Some(expected)
 }
 
-fn archive_wake_thread(
-    stdin: &mut impl Write,
-    stdout_reader: &Receiver<(String, Value)>,
-    stdout_lines: &mut Vec<String>,
-    thread_id: &str,
-    timeout: Duration,
-) -> ModexResult<WakeArchiveResult> {
-    write_app_server_request(
-        stdin,
-        WAKE_THREAD_ARCHIVE_REQUEST_ID,
-        "thread/archive",
-        serde_json::json!({ "threadId": thread_id }),
-    )?;
-    let started = Instant::now();
-    while started.elapsed() < timeout {
-        match stdout_reader.recv_timeout(Duration::from_millis(100)) {
-            Ok((line, message)) => {
-                stdout_lines.push(line);
-                if let Some(result) =
-                    archive_result_from_message(&message, WAKE_THREAD_ARCHIVE_REQUEST_ID, thread_id)
-                {
-                    return Ok(result);
-                }
-            }
-            Err(RecvTimeoutError::Timeout) => {}
-            Err(RecvTimeoutError::Disconnected) => {
-                return Ok(WakeArchiveResult {
-                    archived: false,
-                    error: Some("app-server stdout closed before thread/archive".to_string()),
-                });
-            }
-        }
-    }
-    Ok(WakeArchiveResult {
-        archived: false,
-        error: Some("timed out waiting for thread/archive".to_string()),
-    })
-}
-
-fn archive_result_from_message(
-    message: &Value,
-    archive_request_id: u8,
-    thread_id: &str,
-) -> Option<WakeArchiveResult> {
-    if message.get("id").and_then(Value::as_u64) == Some(archive_request_id as u64) {
-        if message.get("result").is_some() {
-            return Some(WakeArchiveResult {
-                archived: true,
-                error: None,
-            });
-        }
-        let error = message
-            .get("error")
-            .map(app_server_error_text)
-            .or_else(|| Some("thread/archive failed".to_string()));
-        return Some(WakeArchiveResult {
-            archived: false,
-            error,
-        });
-    }
-    if message.get("method").and_then(Value::as_str) == Some("thread/archived")
-        && message
-            .get("params")
-            .and_then(|params| params.get("threadId"))
-            .and_then(Value::as_str)
-            == Some(thread_id)
-    {
-        return Some(WakeArchiveResult {
-            archived: true,
-            error: None,
-        });
-    }
-    None
-}
-
-fn app_server_error_text(error: &Value) -> String {
-    error
-        .get("message")
-        .and_then(Value::as_str)
-        .map(ToString::to_string)
-        .unwrap_or_else(|| error.to_string())
-}
-
 #[cfg(test)]
 mod tests {
     use std::path::Path;
 
-    use super::{archive_result_from_message, wake_thread_start_params, wake_turn_start_params};
+    use super::{wake_thread_start_params, wake_turn_start_params};
 
     #[test]
     fn wake_uses_normal_app_server_thread_turn() {
@@ -714,16 +592,20 @@ mod tests {
         assert_eq!(thread["approvalPolicy"], "never");
         assert_eq!(thread["sandbox"], "read-only");
         assert_eq!(thread["threadSource"], "user");
-        assert_eq!(thread["environments"].as_array().unwrap().len(), 0);
-        assert_eq!(thread["dynamicTools"].as_array().unwrap().len(), 0);
-        assert_eq!(thread["config"]["web_search"], "disabled");
+        assert!(thread.get("sessionStartSource").is_none());
+        assert!(thread.get("environments").is_none());
+        assert!(thread.get("dynamicTools").is_none());
+        assert!(thread.get("config").is_none());
+        assert!(thread.get("baseInstructions").is_none());
+        assert!(thread.get("developerInstructions").is_none());
+        assert!(thread.get("persistExtendedHistory").is_none());
 
         let turn = wake_turn_start_params("thread-1", "Good morning");
         assert_eq!(turn["threadId"], "thread-1");
-        assert_eq!(turn["approvalPolicy"], "never");
         assert_eq!(turn["sandboxPolicy"]["type"], "readOnly");
         assert_eq!(turn["sandboxPolicy"]["networkAccess"], false);
-        assert_eq!(turn["effort"], "low");
+        assert!(turn.get("approvalPolicy").is_none());
+        assert!(turn.get("effort").is_none());
         assert_eq!(
             turn["input"][0]["text"],
             "Modex daily wake check. Reply exactly OK. User message: Good morning"
@@ -732,40 +614,5 @@ mod tests {
             turn["input"][0]["text_elements"].as_array().unwrap().len(),
             0
         );
-    }
-
-    #[test]
-    fn wake_archive_result_records_success_and_errors() {
-        let success = archive_result_from_message(
-            &serde_json::json!({ "id": 4, "result": {} }),
-            4,
-            "thread-1",
-        )
-        .unwrap();
-        assert!(success.archived);
-        assert_eq!(success.error, None);
-
-        let notification = archive_result_from_message(
-            &serde_json::json!({
-                "method": "thread/archived",
-                "params": { "threadId": "thread-1" }
-            }),
-            4,
-            "thread-1",
-        )
-        .unwrap();
-        assert!(notification.archived);
-
-        let failure = archive_result_from_message(
-            &serde_json::json!({
-                "id": 4,
-                "error": { "message": "archive failed" }
-            }),
-            4,
-            "thread-1",
-        )
-        .unwrap();
-        assert!(!failure.archived);
-        assert_eq!(failure.error.as_deref(), Some("archive failed"));
     }
 }
