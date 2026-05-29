@@ -61,7 +61,6 @@ pub fn history_sync_provider_for_identity(identity: &AppIdentity) -> HistorySync
 }
 
 pub fn sync_identity_auth(source_home: &Path, identity_home: &Path) -> ModexResult<PathBuf> {
-    fs::create_dir_all(source_home)?;
     let source_auth = source_home.join("auth.json");
     let identity_auth = identity_home.join("auth.json");
     if !identity_auth.exists() {
@@ -70,15 +69,22 @@ pub fn sync_identity_auth(source_home: &Path, identity_home: &Path) -> ModexResu
             identity_auth.display()
         )));
     }
-    let temporary = source_auth.with_file_name("auth.json.modex-tmp");
-    fs::copy(&identity_auth, &temporary)?;
+    sync_auth_file(&identity_auth, &source_auth)
+}
+
+pub fn sync_auth_file(source_auth: &Path, target_auth: &Path) -> ModexResult<PathBuf> {
+    if let Some(parent) = target_auth.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let temporary = target_auth.with_file_name("auth.json.modex-tmp");
+    fs::copy(source_auth, &temporary)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         let _ = fs::set_permissions(&temporary, fs::Permissions::from_mode(0o600));
     }
-    fs::rename(&temporary, &source_auth)?;
-    Ok(source_auth)
+    fs::rename(&temporary, target_auth)?;
+    Ok(target_auth.to_path_buf())
 }
 
 pub fn sync_source_history_provider(

@@ -8,10 +8,11 @@ use serde_json::Value;
 use tempfile::TempDir;
 
 use super::app_config::{AppIdentity, AppSettings};
-use super::auth::plan_label;
+use super::auth::{auth_identity_match_key, plan_label};
 use super::quota::{snapshot_from_rate_limits, QuotaSnapshot};
 use super::sync::{
-    history_sync_provider_for_identity, sync_identity_auth, sync_source_history_provider,
+    history_sync_provider_for_identity, sync_auth_file, sync_identity_auth,
+    sync_source_history_provider,
 };
 use super::{ModexError, ModexResult};
 
@@ -662,6 +663,7 @@ pub fn read_quota_snapshot(
         temp_home.path(),
         Duration::from_secs(30),
     )?;
+    persist_temporary_identity_auth(settings, identity, temp_home.path())?;
     snapshot_from_rate_limits(&identity.name, &payload)
 }
 
@@ -677,6 +679,7 @@ pub fn read_account_display_name(
         serde_json::json!({ "refreshToken": false }),
         Duration::from_secs(30),
     )?;
+    persist_temporary_identity_auth(settings, identity, temp_home.path())?;
     Ok(account_display_name_from_response(&payload))
 }
 
@@ -796,6 +799,29 @@ fn temporary_identity_home(identity: &AppIdentity) -> ModexResult<TempDir> {
     Ok(temp_home)
 }
 
+fn persist_temporary_identity_auth(
+    settings: &AppSettings,
+    identity: &AppIdentity,
+    temp_home: &Path,
+) -> ModexResult<()> {
+    let temp_auth = temp_home.join("auth.json");
+    if !temp_auth.exists() {
+        return Ok(());
+    }
+    sync_auth_file(&temp_auth, &identity.codex_home.join("auth.json"))?;
+    if auth_homes_match(&settings.source_home, &identity.codex_home) {
+        sync_auth_file(&temp_auth, &settings.source_home.join("auth.json"))?;
+    }
+    Ok(())
+}
+
+fn auth_homes_match(left: &Path, right: &Path) -> bool {
+    let Some(left_key) = auth_identity_match_key(left) else {
+        return false;
+    };
+    auth_identity_match_key(right).as_deref() == Some(left_key.as_str())
+}
+
 fn write_request(stdin: &mut impl Write, id: u8, method: &str, params: Value) -> ModexResult<()> {
     let request = serde_json::json!({
         "id": id,
@@ -877,6 +903,100 @@ fn expand_home(value: &str) -> PathBuf {
 
 fn escape_config_value(value: &str) -> String {
     value.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+#[cfg(test)]
+mod auth_persistence_tests {
+    use super::super::app_config::IdentityAuthType;
+    use super::*;
+
+    #[test]
+    fn persists_refreshed_temp_auth_to_identity_and_matching_source() {
+        let temp = tempfile::tempdir().unwrap();
+        let source_home = temp.path().join("source");
+        let identity_home = temp.path().join(".modex/pro");
+        let temp_home = temp.path().join("temp-auth");
+        std::fs::create_dir_all(&source_home).unwrap();
+        std::fs::create_dir_all(&identity_home).unwrap();
+        std::fs::create_dir_all(&temp_home).unwrap();
+        std::fs::write(source_home.join("auth.json"), auth_json("acct-pro", "old")).unwrap();
+        std::fs::write(
+            identity_home.join("auth.json"),
+            auth_json("acct-pro", "old"),
+        )
+        .unwrap();
+        let refreshed_auth = auth_json("acct-pro", "rotated");
+        std::fs::write(temp_home.join("auth.json"), &refreshed_auth).unwrap();
+        let mut settings = AppSettings::default_for_home(temp.path().to_path_buf());
+        settings.source_home = source_home.clone();
+        let identity = identity("Pro", identity_home.clone());
+
+        persist_temporary_identity_auth(&settings, &identity, &temp_home).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(identity_home.join("auth.json")).unwrap(),
+            refreshed_auth
+        );
+        assert_eq!(
+            std::fs::read_to_string(source_home.join("auth.json")).unwrap(),
+            refreshed_auth
+        );
+    }
+
+    #[test]
+    fn keeps_source_auth_when_temp_auth_belongs_to_another_account() {
+        let temp = tempfile::tempdir().unwrap();
+        let source_home = temp.path().join("source");
+        let identity_home = temp.path().join(".modex/pro");
+        let temp_home = temp.path().join("temp-auth");
+        std::fs::create_dir_all(&source_home).unwrap();
+        std::fs::create_dir_all(&identity_home).unwrap();
+        std::fs::create_dir_all(&temp_home).unwrap();
+        let source_auth = auth_json("acct-team", "current");
+        std::fs::write(source_home.join("auth.json"), &source_auth).unwrap();
+        std::fs::write(
+            identity_home.join("auth.json"),
+            auth_json("acct-pro", "old"),
+        )
+        .unwrap();
+        let refreshed_auth = auth_json("acct-pro", "rotated");
+        std::fs::write(temp_home.join("auth.json"), &refreshed_auth).unwrap();
+        let mut settings = AppSettings::default_for_home(temp.path().to_path_buf());
+        settings.source_home = source_home.clone();
+        let identity = identity("Pro", identity_home.clone());
+
+        persist_temporary_identity_auth(&settings, &identity, &temp_home).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(identity_home.join("auth.json")).unwrap(),
+            refreshed_auth
+        );
+        assert_eq!(
+            std::fs::read_to_string(source_home.join("auth.json")).unwrap(),
+            source_auth
+        );
+    }
+
+    fn auth_json(account_id: &str, refresh_token: &str) -> String {
+        serde_json::json!({
+            "tokens": {
+                "account_id": account_id,
+                "refresh_token": refresh_token
+            }
+        })
+        .to_string()
+    }
+
+    fn identity(name: &str, codex_home: PathBuf) -> AppIdentity {
+        AppIdentity {
+            name: name.to_string(),
+            codex_home,
+            monitor: false,
+            workspace_id: None,
+            auth_type: IdentityAuthType::ChatGpt,
+            api_base_url: None,
+        }
+    }
 }
 
 #[cfg(all(test, target_os = "macos"))]
