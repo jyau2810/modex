@@ -181,7 +181,7 @@ impl AppEngine {
         login: impl FnOnce(&AppSettings, &AppIdentity, &str) -> ModexResult<()>,
     ) -> ModexResult<IdentityView> {
         let account_name = clean_name(account_name.to_string())
-            .ok_or_else(|| ModexError::from("账号名称不能为空"))?;
+            .ok_or_else(|| ModexError::from("账号名不能为空"))?;
         let api_key = api_key.trim();
         if api_key.is_empty() {
             return Err(ModexError::from("API Key 不能为空"));

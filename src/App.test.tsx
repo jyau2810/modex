@@ -21,7 +21,7 @@ const mockApi = vi.hoisted(() => ({
   runDailyWakeNow: vi.fn(),
   getRecentLogEntries: vi.fn(),
   openIdentityDirectory: vi.fn(),
-  patchCodexPlugins: vi.fn(),
+  installCodexPlugins: vi.fn(),
 }));
 
 const eventMocks = vi.hoisted(() => ({
@@ -174,14 +174,14 @@ describe("App", () => {
     expect(within(teamRow).queryByText(/更新于/)).not.toBeInTheDocument();
     expect(within(teamRow).getByRole("button", { name: /切换到 team@example.com/ })).toHaveAttribute(
       "title",
-      "这是当前使用的账号",
+      "当前正在使用这个账号",
     );
     expect(within(teamRow).getByRole("button", { name: /打开 team@example.com 配置目录/ })).toBeInTheDocument();
     expect(within(teamRow).getByRole("button", { name: /打开 team@example.com 配置目录/ })).not.toHaveTextContent("目录");
     expect(within(teamRow).getByRole("button", { name: /删除 team@example.com/ })).not.toHaveTextContent("删除");
 
     const backupRow = screen.getByRole("article", { name: /backup@example.com/ });
-    expect(backupRow.querySelector(".account-status")).toHaveTextContent("登录失效");
+    expect(backupRow.querySelector(".account-status")).toHaveTextContent("需重新登录");
     expect(within(backupRow).queryByText("个人版")).not.toBeInTheDocument();
     expect(within(backupRow).queryByText("无额外额度")).not.toBeInTheDocument();
     expect(backupRow).toHaveTextContent(/本周已用 80%（\d{2}\/\d{2} \d{2}:\d{2}）/);
@@ -190,7 +190,7 @@ describe("App", () => {
     const unknownRow = screen.getByRole("article", { name: /unknown@example.com/ });
     expect(unknownRow.querySelector(".account-status")).toHaveTextContent("可用");
     expect(within(unknownRow).queryByText("Unknown quota")).not.toBeInTheDocument();
-    expect(within(unknownRow).queryByText("暂无可显示配额条")).not.toBeInTheDocument();
+    expect(within(unknownRow).queryByText("暂无可展示的额度信息")).not.toBeInTheDocument();
     expect(unknownRow.querySelector(".quota-meter")).not.toBeInTheDocument();
 
     expect(screen.queryByText("快捷操作")).not.toBeInTheDocument();
@@ -244,7 +244,7 @@ describe("App", () => {
 
     const row = await screen.findByRole("article", { name: /Gateway/ });
     expect(row.querySelector(".account-status")).toHaveTextContent("API Key");
-    expect(row.querySelector(".account-status")).not.toHaveTextContent("登录失效");
+    expect(row.querySelector(".account-status")).not.toHaveTextContent("需重新登录");
     expect(within(row).getByRole("button", { name: /切换到 Gateway/ })).not.toBeDisabled();
   });
 
@@ -284,7 +284,7 @@ describe("App", () => {
     expect(within(row).getByRole("button", { name: /切换到 Gateway/ })).toBeDisabled();
     expect(within(row).getByRole("button", { name: /切换到 Gateway/ })).toHaveAttribute(
       "title",
-      "这是当前使用的账号",
+      "当前正在使用这个账号",
     );
   });
 
@@ -321,7 +321,7 @@ describe("App", () => {
     await userEvent.click(screen.getByRole("button", { name: /新增账号/ }));
     const addDialog = await screen.findByRole("dialog", { name: "新增账号" });
     await userEvent.click(within(addDialog).getByRole("button", { name: "API Key 登录" }));
-    await userEvent.type(screen.getByLabelText("账号名称"), "Gateway");
+    await userEvent.type(screen.getByLabelText("账号名"), "Gateway");
     await userEvent.type(screen.getByLabelText("API Key"), "sk-test-key");
     await userEvent.type(screen.getByLabelText("Base URL"), "https://gateway.example/v1");
     expect(screen.getByLabelText("API Key")).toHaveAttribute("type", "password");
@@ -392,7 +392,7 @@ describe("App", () => {
     expect(screen.getByRole("article", { name: /backup@example.com/ })).toHaveClass("current");
     expect(within(screen.getByRole("article", { name: /backup@example.com/ })).getByRole("button", { name: /切换到 backup@example.com/ })).toHaveAttribute(
       "title",
-      "这是当前使用的账号",
+      "当前正在使用这个账号",
     );
   });
 
@@ -428,7 +428,7 @@ describe("App", () => {
     render(<App />);
 
     const row = await screen.findByRole("article", { name: /enterprise@example.com/ });
-    expect(within(row).queryByText("暂无可显示配额条")).not.toBeInTheDocument();
+    expect(within(row).queryByText("暂无可展示的额度信息")).not.toBeInTheDocument();
     expect(within(row).queryByText(/5小时已用/)).not.toBeInTheDocument();
     expect(within(row).queryByText(/本周已用/)).not.toBeInTheDocument();
     expect(row.querySelector(".quota-meter")).not.toBeInTheDocument();
@@ -592,7 +592,7 @@ describe("App", () => {
 
     await screen.findByRole("heading", { name: "Modex", level: 1 });
     await userEvent.click(screen.getByRole("button", { name: /新增账号/ }));
-    await userEvent.click(await screen.findByRole("button", { name: "浏览器登录" }));
+    await userEvent.click(await screen.findByRole("button", { name: "用浏览器登录" }));
 
     await waitFor(() => expect(mockApi.loginIdentity).toHaveBeenCalledWith("登录中"));
     const pendingRow = await screen.findByRole("article", { name: /登录中/ });
@@ -742,7 +742,7 @@ describe("App", () => {
       realSetTimeout(handler, timeout === 2000 ? 0 : timeout, ...args)) as typeof window.setTimeout);
     try {
       await userEvent.click(screen.getByRole("button", { name: /新增账号/ }));
-      await userEvent.click(await screen.findByRole("button", { name: "浏览器登录" }));
+      await userEvent.click(await screen.findByRole("button", { name: "用浏览器登录" }));
 
       await waitFor(() => expect(mockApi.loginIdentity).toHaveBeenCalledWith("登录中"));
       await waitFor(() => expect(mockApi.refreshIdentity).toHaveBeenCalledWith("new@example.com"));
@@ -905,7 +905,7 @@ describe("App", () => {
     eventMocks.listeners.get("modex://refresh-started")?.();
 
     expect(await screen.findByRole("dialog", { name: "处理中" })).toBeInTheDocument();
-    expect(screen.getByText("加载 Modex")).toBeInTheDocument();
+    expect(screen.getByText("正在加载 Modex")).toBeInTheDocument();
   });
 
   it("shows the refresh dialog when initial app state is already refreshing", async () => {
@@ -1029,8 +1029,8 @@ describe("App", () => {
     await userEvent.click(screen.getByRole("button", { name: "打开全局设置" }));
     await userEvent.clear(screen.getByLabelText("Codex CLI"));
     await userEvent.type(screen.getByLabelText("Codex CLI"), "/opt/codex");
-    await userEvent.clear(screen.getByLabelText("轮询间隔"));
-    await userEvent.type(screen.getByLabelText("轮询间隔"), "90");
+    await userEvent.clear(screen.getByLabelText("刷新间隔"));
+    await userEvent.type(screen.getByLabelText("刷新间隔"), "90");
     await userEvent.click(screen.getByRole("button", { name: "保存全局设置" }));
 
     await waitFor(() => {
@@ -1062,7 +1062,7 @@ describe("App", () => {
 
     await waitFor(() => expect(mockApi.updateSettings).toHaveBeenCalled());
     expect(screen.getByRole("button", { name: "保存全局设置" })).not.toBeDisabled();
-    expect(screen.getByRole("button", { name: "保存唤醒设置" })).not.toBeDisabled();
+    expect(screen.getByRole("button", { name: "保存自动唤醒" })).not.toBeDisabled();
     expect(screen.getByLabelText("Codex CLI")).toHaveValue("/quiet/codex");
     expect(mockApi.getAppState).toHaveBeenCalledTimes(1);
 
@@ -1070,20 +1070,6 @@ describe("App", () => {
 
     expect(await screen.findByRole("status")).toHaveTextContent("全局设置已保存");
     expect(mockApi.getAppState).toHaveBeenCalledTimes(1);
-  });
-
-  it("patches the Codex plugin entry from settings", async () => {
-    mockApi.getAppState.mockResolvedValue(state());
-    mockApi.patchCodexPlugins.mockResolvedValue({ ok: true, message: "Codex 已重新启动" });
-
-    render(<App />);
-
-    await screen.findByRole("heading", { name: "Modex", level: 1 });
-    await userEvent.click(screen.getByRole("button", { name: "打开全局设置" }));
-    await userEvent.click(screen.getByRole("button", { name: "Patch Codex 插件入口" }));
-
-    await waitFor(() => expect(mockApi.patchCodexPlugins).toHaveBeenCalledTimes(1));
-    expect(await screen.findByRole("status")).toHaveTextContent("Codex 插件入口已 patch");
   });
 
   it("renders and saves daily wake settings", async () => {
@@ -1105,17 +1091,17 @@ describe("App", () => {
 
     await screen.findByRole("heading", { name: "Modex", level: 1 });
     await userEvent.click(screen.getByRole("button", { name: "打开全局设置" }));
-    const wakeSwitch = screen.getByRole("switch", { name: "每日后台唤醒" });
+    const wakeSwitch = screen.getByRole("switch", { name: "每日自动唤醒" });
     expect(wakeSwitch).toHaveAttribute("aria-checked", "false");
     await userEvent.click(wakeSwitch);
     expect(wakeSwitch).toHaveAttribute("aria-checked", "true");
-    await userEvent.clear(screen.getByLabelText("唤醒时间 1"));
-    await userEvent.type(screen.getByLabelText("唤醒时间 1"), "09:15");
-    await userEvent.clear(screen.getByLabelText("5小时已用大于"));
-    await userEvent.type(screen.getByLabelText("5小时已用大于"), "3");
-    await userEvent.clear(screen.getByLabelText("本周剩余小于"));
-    await userEvent.type(screen.getByLabelText("本周剩余小于"), "20");
-    await userEvent.click(screen.getByRole("button", { name: "保存唤醒设置" }));
+    await userEvent.clear(screen.getByLabelText("执行时间 1"));
+    await userEvent.type(screen.getByLabelText("执行时间 1"), "09:15");
+    await userEvent.clear(screen.getByLabelText("5 小时用量超过"));
+    await userEvent.type(screen.getByLabelText("5 小时用量超过"), "3");
+    await userEvent.clear(screen.getByLabelText("本周剩余额度低于"));
+    await userEvent.type(screen.getByLabelText("本周剩余额度低于"), "20");
+    await userEvent.click(screen.getByRole("button", { name: "保存自动唤醒" }));
 
     await waitFor(() =>
       expect(mockApi.updateDailyWakeSettings).toHaveBeenCalledWith({
@@ -1148,13 +1134,13 @@ describe("App", () => {
 
     await screen.findByRole("heading", { name: "Modex", level: 1 });
     await userEvent.click(screen.getByRole("button", { name: "打开全局设置" }));
-    await userEvent.click(screen.getByRole("button", { name: "新增唤醒时间" }));
+    await userEvent.click(screen.getByRole("button", { name: "新增时间" }));
 
-    const timeInputs = [screen.getByLabelText("唤醒时间 1"), screen.getByLabelText("唤醒时间 2")];
+    const timeInputs = [screen.getByLabelText("执行时间 1"), screen.getByLabelText("执行时间 2")];
     expect(timeInputs).toHaveLength(2);
     await userEvent.clear(timeInputs[1]);
     await userEvent.type(timeInputs[1], "14:00");
-    await userEvent.click(screen.getByRole("button", { name: "保存唤醒设置" }));
+    await userEvent.click(screen.getByRole("button", { name: "保存自动唤醒" }));
 
     await waitFor(() =>
       expect(mockApi.updateDailyWakeSettings).toHaveBeenCalledWith({
@@ -1190,9 +1176,9 @@ describe("App", () => {
 
     await screen.findByRole("heading", { name: "Modex", level: 1 });
     await userEvent.click(screen.getByRole("button", { name: "打开全局设置" }));
-    await userEvent.clear(screen.getByLabelText("唤醒消息"));
-    await userEvent.type(screen.getByLabelText("唤醒消息"), "Wake test");
-    await userEvent.click(screen.getByRole("button", { name: "立即测试唤醒" }));
+    await userEvent.clear(screen.getByLabelText("唤醒提示语"));
+    await userEvent.type(screen.getByLabelText("唤醒提示语"), "Wake test");
+    await userEvent.click(screen.getByRole("button", { name: "立即测试" }));
 
     await waitFor(() =>
       expect(mockApi.updateDailyWakeSettings).toHaveBeenCalledWith({
@@ -1225,7 +1211,7 @@ describe("App", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("全局设置保存失败");
     expect(screen.getByRole("alert")).toHaveTextContent("config is locked");
 
-    await userEvent.click(screen.getByRole("button", { name: "保存唤醒设置" }));
+    await userEvent.click(screen.getByRole("button", { name: "保存自动唤醒" }));
 
     await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("唤醒设置保存失败"));
     expect(screen.getByRole("alert")).toHaveTextContent("invalid wake time");
@@ -1239,17 +1225,17 @@ describe("App", () => {
     await screen.findByRole("heading", { name: "Modex", level: 1 });
     await userEvent.click(screen.getByRole("button", { name: "打开全局设置" }));
 
-    expect(screen.getByRole("button", { name: "说明：5小时已用大于" })).toHaveAttribute(
+    expect(screen.getByRole("button", { name: "说明：5 小时用量超过" })).toHaveAttribute(
       "data-tooltip",
-      expect.stringContaining("5小时用量高于该百分比时跳过唤醒"),
+      expect.stringContaining("5 小时窗口用量超过该比例时跳过唤醒"),
     );
-    expect(screen.getByRole("button", { name: "说明：本周剩余小于" })).toHaveAttribute(
+    expect(screen.getByRole("button", { name: "说明：本周剩余额度低于" })).toHaveAttribute(
       "data-tooltip",
-      expect.stringContaining("周额度剩余低于该百分比时跳过唤醒"),
+      expect.stringContaining("本周剩余额度低于该比例时跳过唤醒"),
     );
-    expect(screen.getByRole("button", { name: "说明：异常增长大于" })).toHaveAttribute(
+    expect(screen.getByRole("button", { name: "说明：用量异常增长超过" })).toHaveAttribute(
       "data-tooltip",
-      expect.stringContaining("唤醒后5小时用量增长超过该百分比"),
+      expect.stringContaining("唤醒后 5 小时用量增长超过该比例"),
     );
 
     const styles = readFileSync(join(process.cwd(), "src/styles.css"), "utf8");

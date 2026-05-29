@@ -256,7 +256,7 @@ fn identity_menu_label(
     let available = identity_menu_available(logged_in, login_expired, quota_status);
     let marker = if available { "🟢" } else { "🔴" };
     let suffix = if login_expired {
-        "（登录失效）"
+        "（需重新登录）"
     } else if !logged_in {
         "（未登录）"
     } else if quota_status == "limited" {
@@ -335,7 +335,7 @@ mod tests {
         );
         assert_eq!(
             identity_menu_label("expired@example.com", true, true, "available"),
-            "🔴 expired@example.com（登录失效）"
+            "🔴 expired@example.com（需重新登录）"
         );
     }
 

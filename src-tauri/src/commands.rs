@@ -10,7 +10,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::core::app_config::{AppIdentity, AppSettings, DailyWakeSettings, IdentityAuthType};
 use crate::core::auth::{auth_plan_type, plan_label};
-use crate::core::codex::{patch_codex_plugin_auth_gate_and_restart, read_quota_snapshot};
+use crate::core::codex::{install_codex_plugin_and_restart, read_quota_snapshot};
 use crate::core::engine::{
     ActionResult, AppEngine, AppViewState, IdentityView, ImportIdentityResult, SettingsPatch,
 };
@@ -287,14 +287,20 @@ pub async fn open_identity_directory(app: AppHandle, name: String) -> Result<Act
 }
 
 #[tauri::command]
-pub async fn patch_codex_plugins(app: AppHandle) -> Result<ActionResult, String> {
+pub async fn install_codex_plugins(app: AppHandle) -> Result<ActionResult, String> {
     run_blocking(move || {
         let state = app.state::<ModexState>();
         let settings = with_engine_ref(state.inner(), |engine| Ok(engine.settings().clone()))?;
-        patch_codex_plugin_auth_gate_and_restart(&settings).map_err(|error| error.to_string())?;
+        let restarted =
+            install_codex_plugin_and_restart(&settings).map_err(|error| error.to_string())?;
+        let message = if restarted {
+            "Codex 插件已通过 CLI 安装，并已重新启动 Codex。"
+        } else {
+            "Codex 插件已通过 CLI 安装。请手动重启 Codex 后使用。"
+        };
         Ok(ActionResult {
             ok: true,
-            message: "Codex 插件入口已 patch，并已重新启动 Codex。".to_string(),
+            message: message.to_string(),
         })
     })
     .await
@@ -737,7 +743,7 @@ fn run_daily_wake_job(
                         "info",
                         "skipped",
                         Some(reason),
-                        "账号未唤醒",
+                        "已跳过唤醒",
                         serde_json::json!({ "trigger": mode.as_str() }),
                         &wake_settings,
                     ),
@@ -798,7 +804,7 @@ fn run_daily_wake_job(
                     (
                         "error",
                         "circuitBreaker",
-                        "每日唤醒熔断",
+                        "自动唤醒已暂停",
                         Some("timedOut".to_string()),
                     )
                 } else if result.exit_code != Some(0) {
@@ -806,7 +812,7 @@ fn run_daily_wake_job(
                     (
                         "error",
                         "circuitBreaker",
-                        "每日唤醒熔断",
+                        "自动唤醒已暂停",
                         Some("nonZeroExit".to_string()),
                     )
                 } else if result.last_message.trim() != "OK" || result.last_message.len() > 16 {
@@ -814,7 +820,7 @@ fn run_daily_wake_job(
                     (
                         "error",
                         "circuitBreaker",
-                        "每日唤醒熔断",
+                        "自动唤醒已暂停",
                         Some("unexpectedReply".to_string()),
                     )
                 } else if primary_delta_exceeds_limit(
@@ -826,7 +832,7 @@ fn run_daily_wake_job(
                     (
                         "error",
                         "circuitBreaker",
-                        "每日唤醒熔断",
+                        "自动唤醒已暂停",
                         Some("primaryDeltaExceeded".to_string()),
                     )
                 } else if !quota_evidence.is_verified() {
@@ -870,17 +876,17 @@ fn run_daily_wake_job(
                     detail["quotaWindowVerified"] = serde_json::json!(final_evidence.is_verified());
                     detail["quotaWindowEvidence"] = serde_json::json!(final_evidence.code());
                     if final_evidence.is_verified() {
-                        ("info", "woke", "每日唤醒完成", None)
+                        ("info", "woke", "自动唤醒完成", None)
                     } else {
                         (
                             "warn",
                             "unverified",
-                            "每日唤醒待确认",
+                            "唤醒结果待确认",
                             Some("quotaWindowUnverified".to_string()),
                         )
                     }
                 } else {
-                    ("info", "woke", "每日唤醒完成", None)
+                    ("info", "woke", "自动唤醒完成", None)
                 }
             }
             Err(error) => {
@@ -889,7 +895,7 @@ fn run_daily_wake_job(
                 (
                     "error",
                     "circuitBreaker",
-                    "每日唤醒熔断",
+                    "自动唤醒已暂停",
                     Some("executionError".to_string()),
                 )
             }
@@ -957,13 +963,13 @@ fn wake_audit_entry(
         title: title.to_string(),
         message: match decision {
             "skipped" => format!(
-                "{} 未唤醒：{}",
+                "{} 已跳过唤醒：{}",
                 identity.name,
                 reason.as_deref().unwrap_or("unknown")
             ),
-            "woke" => format!("{} 已完成每日唤醒", identity.name),
-            "unverified" => format!("{} 会话完成，但额度窗口未确认", identity.name),
-            _ => format!("{} 每日唤醒已停止", identity.name),
+            "woke" => format!("{} 已完成自动唤醒", identity.name),
+            "unverified" => format!("{} 唤醒已执行，但额度变化仍待确认", identity.name),
+            _ => format!("{} 自动唤醒已停止", identity.name),
         },
         decision: decision.to_string(),
         reason,
@@ -990,8 +996,8 @@ fn quota_refresh_error_log_entry(trigger: &str, identity: &IdentityView) -> Opti
     let timestamp = timestamp_millis();
     let (title, message, reason) = if identity.login_expired {
         (
-            "登录失效".to_string(),
-            format!("{} 登录已失效，需要重新登录。", identity.name),
+            "需要重新登录".to_string(),
+            format!("{} 登录已失效，请重新登录。", identity.name),
             "loginExpired".to_string(),
         )
     } else {
@@ -1546,9 +1552,9 @@ mod tests {
         .unwrap();
 
         let entry = quota_refresh_error_log_entry("manual", &refreshed[0]).unwrap();
-        assert_eq!(entry.title, "登录失效");
+        assert_eq!(entry.title, "需要重新登录");
         assert_eq!(entry.reason.as_deref(), Some("loginExpired"));
-        assert!(entry.message.contains("需要重新登录"));
+        assert!(entry.message.contains("请重新登录"));
     }
 
     #[test]
@@ -1577,7 +1583,7 @@ mod tests {
             "info",
             "skipped",
             Some(WakeSkipReason::QuotaUnavailable),
-            "账号未唤醒",
+            "已跳过唤醒",
             serde_json::json!({ "trigger": "manual" }),
             &DailyWakeSettings::default(),
         );

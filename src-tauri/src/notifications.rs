@@ -19,8 +19,8 @@ pub struct NotificationSpec {
 
 pub fn switch_success_notification(name: &str) -> NotificationSpec {
     NotificationSpec {
-        title: "账号切换成功".to_string(),
-        body: format!("已切换到账号：{name}"),
+        title: "已切换账号".to_string(),
+        body: format!("当前账号：{name}"),
     }
 }
 
@@ -44,16 +44,16 @@ pub fn refresh_notifications(
         let previous = before_by_name.get(identity.name.as_str()).copied();
         if became_login_expired(previous, identity) {
             notifications.push(NotificationSpec {
-                title: "登录失效".to_string(),
-                body: format!("{} 需要重新登录。", identity.name),
+                title: "需要重新登录".to_string(),
+                body: format!("{} 登录已失效，请重新登录。", identity.name),
             });
             continue;
         }
         if refresh_error_changed(previous, identity) {
             notifications.push(NotificationSpec {
-                title: "刷新失败".to_string(),
+                title: "配额刷新失败".to_string(),
                 body: format!(
-                    "{} 刷新失败：{}",
+                    "{} 配额刷新失败：{}",
                     identity.name,
                     identity.quota.error.as_deref().unwrap_or("未知错误")
                 ),
@@ -287,8 +287,8 @@ mod tests {
         assert_eq!(
             switch_success_notification("team@example.com"),
             NotificationSpec {
-                title: "账号切换成功".to_string(),
-                body: "已切换到账号：team@example.com".to_string(),
+                title: "已切换账号".to_string(),
+                body: "当前账号：team@example.com".to_string(),
             }
         );
     }
@@ -331,13 +331,13 @@ mod tests {
             refresh_notifications(&before, &after),
             vec![
                 NotificationSpec {
-                    title: "登录失效".to_string(),
-                    body: "expired@example.com 需要重新登录。".to_string(),
+                    title: "需要重新登录".to_string(),
+                    body: "expired@example.com 登录已失效，请重新登录。".to_string(),
                 },
                 NotificationSpec {
-                    title: "刷新失败".to_string(),
+                    title: "配额刷新失败".to_string(),
                     body:
-                        "broken@example.com 刷新失败：timed out waiting for account/rateLimits/read"
+                        "broken@example.com 配额刷新失败：timed out waiting for account/rateLimits/read"
                             .to_string(),
                 },
             ]

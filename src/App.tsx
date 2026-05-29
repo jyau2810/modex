@@ -13,7 +13,6 @@ import {
   RefreshCw,
   Settings,
   Trash2,
-  Wrench,
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -44,9 +43,9 @@ type ToastNoticeState = {
 };
 
 const WAKE_THRESHOLD_HELP = {
-  primary: "当前5小时用量高于该百分比时跳过唤醒，避免在已经消耗过额度的窗口继续触发。",
-  weekly: "周额度剩余低于该百分比时跳过唤醒，优先保护团队账号的长期额度。",
-  delta: "唤醒后5小时用量增长超过该百分比会记为异常，方便追溯是否触发了超预期消耗。",
+  primary: "当 5 小时窗口用量超过该比例时跳过唤醒，避免继续消耗当前窗口额度。",
+  weekly: "当本周剩余额度低于该比例时跳过唤醒，优先保住团队账号的周额度。",
+  delta: "唤醒后 5 小时用量增长超过该比例时记录为异常，便于追溯是否有超预期消耗。",
 };
 
 function App() {
@@ -267,7 +266,7 @@ function App() {
         reload: true,
         successNotice: {
           title: "API Key 账号已添加",
-          message: "已保存为独立身份。",
+          message: "已创建独立账号配置。",
         },
       },
     );
@@ -364,7 +363,7 @@ function App() {
       <>
         <main className="boot-screen">
           <Loader2 className="spin" size={28} />
-          <span>加载 Modex</span>
+          <span>正在加载 Modex</span>
         </main>
         <RefreshDialog open={refreshEventActive} />
       </>
@@ -429,7 +428,7 @@ function App() {
                   showBusy: false,
                   successNotice: {
                     title: "全局设置已保存",
-                    message: "配置已写入。",
+                    message: "配置已保存。",
                   },
                 })
               }
@@ -441,7 +440,7 @@ function App() {
                   showBusy: false,
                   successNotice: {
                     title: "唤醒设置已保存",
-                    message: "每日后台唤醒配置已写入。",
+                    message: "每日自动唤醒已保存。",
                   },
                 })
               }
@@ -458,20 +457,10 @@ function App() {
                     reload: false,
                     successNotice: {
                       title: "测试唤醒已完成",
-                      message: "详情已写入日志面板。",
+                      message: "详情见运行日志。",
                     },
                   },
                 )
-              }
-              onPatchCodexPlugins={() =>
-                runAction("patch-codex-plugins", () => modexApi.patchCodexPlugins(), {
-                  failureNoticeTitle: "Codex 插件入口 patch 失败",
-                  reload: false,
-                  successNotice: {
-                    title: "Codex 插件入口已 patch",
-                    message: "已关闭 asar 完整性校验、重新签名并重启 Codex。",
-                  },
-                })
               }
             />
           ) : appState.identities.length > 0 ? (
@@ -666,7 +655,7 @@ function AddAccountDialog({
           <div className="add-account-options">
             <button className="account-method-button" onClick={onBrowserLogin} disabled={busy}>
               <Plus size={18} />
-              浏览器登录
+              用浏览器登录
             </button>
             <button className="account-method-button" onClick={onApiKeyLogin} disabled={busy}>
               <KeyRound size={18} />
@@ -708,7 +697,7 @@ function ApiKeyDialog({
         <Dialog.Content className="api-key-dialog" aria-describedby={undefined}>
           <Dialog.Title>API Key 登录</Dialog.Title>
           <label>
-            <span>账号名称</span>
+            <span>账号名</span>
             <input
               value={form.accountName}
               onChange={(event) => setForm({ ...form, accountName: event.target.value })}
@@ -798,7 +787,7 @@ function AccountRow({
             <QuotaMeter key={`${meter.label.prefix}${meter.label.percent ?? ""}${meter.label.suffix ?? ""}`} label={meter.label} value={meter.value} />
           ))
         ) : showQuotaPlaceholder ? (
-          <p className="quota-empty">暂无可显示配额条</p>
+          <p className="quota-empty">暂无可展示的额度信息</p>
         ) : null}
       </div>
 
@@ -806,7 +795,7 @@ function AccountRow({
         <button
           className="primary-button"
           aria-label={`切换到 ${identity.name}`}
-          title={identity.isCurrent ? "这是当前使用的账号" : undefined}
+          title={identity.isCurrent ? "当前正在使用这个账号" : undefined}
           onClick={onSwitch}
           disabled={disabled || identity.isCurrent || identity.loginExpired || !identity.loggedIn}
         >
@@ -841,14 +830,12 @@ function SettingsView({
   onSave,
   onSaveWake,
   onRunWakeNow,
-  onPatchCodexPlugins,
 }: {
   appState: AppSettings;
   busy: boolean;
   onSave: (patch: SettingsPatch) => void;
   onSaveWake: (dailyWake: DailyWakeSettings) => void;
   onRunWakeNow: (dailyWake: DailyWakeSettings) => void;
-  onPatchCodexPlugins: () => void;
 }) {
   const [form, setForm] = useState({
     codexBinary: appState.codexBinary,
@@ -925,7 +912,7 @@ function SettingsView({
         <input value={form.sourceHome} onChange={(event) => setForm({ ...form, sourceHome: event.target.value })} />
       </label>
       <label>
-        <span>轮询间隔</span>
+        <span>刷新间隔</span>
         <input
           type="number"
           min={10}
@@ -947,14 +934,10 @@ function SettingsView({
       >
         保存全局设置
       </button>
-      <button className="icon-button settings-save" onClick={onPatchCodexPlugins} disabled={busy}>
-        <Wrench size={15} />
-        Patch Codex 插件入口
-      </button>
       <div className="settings-divider" />
       <div className="switch-field">
         <div className="switch-copy">
-          <span>每日后台唤醒</span>
+          <span>每日自动唤醒</span>
           <small>{wakeForm.enabled ? "已开启" : "已关闭"}</small>
         </div>
         <button
@@ -962,7 +945,7 @@ function SettingsView({
           className="switch-control"
           role="switch"
           aria-checked={wakeForm.enabled}
-          aria-label="每日后台唤醒"
+          aria-label="每日自动唤醒"
           onClick={() => setWakeForm({ ...wakeForm, enabled: !wakeForm.enabled })}
         >
           <span aria-hidden="true" />
@@ -970,10 +953,10 @@ function SettingsView({
       </div>
       <div className="wake-times-field">
         <div className="wake-times-header">
-          <span>唤醒时间</span>
+          <span>执行时间</span>
           <button className="icon-button compact-text-button" type="button" onClick={addWakeTime} disabled={busy}>
             <Plus size={15} />
-            新增唤醒时间
+            新增时间
           </button>
         </div>
         <div className="wake-time-list">
@@ -981,14 +964,14 @@ function SettingsView({
             <div className="wake-time-row" key={index}>
               <input
                 type="time"
-                aria-label={`唤醒时间 ${index + 1}`}
+                aria-label={`执行时间 ${index + 1}`}
                 value={time}
                 onChange={(event) => updateWakeTime(index, event.target.value)}
               />
               <button
                 className="icon-button wake-time-remove"
                 type="button"
-                aria-label={`删除唤醒时间 ${index + 1}`}
+                aria-label={`删除执行时间 ${index + 1}`}
                 onClick={() => removeWakeTime(index)}
                 disabled={busy || wakeForm.times.length <= 1}
               >
@@ -999,14 +982,14 @@ function SettingsView({
         </div>
       </div>
       <label>
-        <span>唤醒消息</span>
+        <span>唤醒提示语</span>
         <input value={wakeForm.message} onChange={(event) => setWakeForm({ ...wakeForm, message: event.target.value })} />
       </label>
       <div className="settings-grid">
         <div className="threshold-field">
           <div className="field-label-row">
-            <label htmlFor="wake-primary-threshold">5小时已用大于</label>
-            <HelpTip label="5小时已用大于" text={WAKE_THRESHOLD_HELP.primary} />
+            <label htmlFor="wake-primary-threshold">5 小时用量超过</label>
+            <HelpTip label="5 小时用量超过" text={WAKE_THRESHOLD_HELP.primary} />
           </div>
           <input
             id="wake-primary-threshold"
@@ -1019,8 +1002,8 @@ function SettingsView({
         </div>
         <div className="threshold-field">
           <div className="field-label-row">
-            <label htmlFor="wake-weekly-threshold">本周剩余小于</label>
-            <HelpTip label="本周剩余小于" text={WAKE_THRESHOLD_HELP.weekly} />
+            <label htmlFor="wake-weekly-threshold">本周剩余额度低于</label>
+            <HelpTip label="本周剩余额度低于" text={WAKE_THRESHOLD_HELP.weekly} />
           </div>
           <input
             id="wake-weekly-threshold"
@@ -1033,8 +1016,8 @@ function SettingsView({
         </div>
         <div className="threshold-field">
           <div className="field-label-row">
-            <label htmlFor="wake-delta-threshold">异常增长大于</label>
-            <HelpTip label="异常增长大于" text={WAKE_THRESHOLD_HELP.delta} />
+            <label htmlFor="wake-delta-threshold">用量异常增长超过</label>
+            <HelpTip label="用量异常增长超过" text={WAKE_THRESHOLD_HELP.delta} />
           </div>
           <input
             id="wake-delta-threshold"
@@ -1048,10 +1031,10 @@ function SettingsView({
       </div>
       <div className="settings-actions">
         <button className="primary-button settings-save" onClick={() => onSaveWake(currentWakeSettings())} disabled={busy}>
-          保存唤醒设置
+          保存自动唤醒
         </button>
         <button className="icon-button settings-save" onClick={() => onRunWakeNow(currentWakeSettings())} disabled={busy}>
-          立即测试唤醒
+          立即测试
         </button>
       </div>
     </section>
@@ -1074,7 +1057,7 @@ function EmptyAccounts({ onAdd, busy }: { onAdd: () => void; busy: boolean }) {
   return (
     <section className="empty-state">
       <h3>暂无账号</h3>
-      <p>添加一个 Codex 身份后，Modex 会为它维护独立登录态。</p>
+      <p>添加一个 Codex 账号后，Modex 会为它单独保存登录状态。</p>
       <button className="primary-button" onClick={onAdd} disabled={busy}>
         <Plus size={17} />
         新增账号
@@ -1158,7 +1141,7 @@ function formatLogTime(timestampMillis: number) {
 
 function statusLabel(identity: Identity) {
   if (identity.authType === "apiKey" && identity.loggedIn && !identity.loginExpired) return "API Key";
-  if (identity.loginExpired || !identity.loggedIn) return "登录失效";
+  if (identity.loginExpired || !identity.loggedIn) return "需重新登录";
   if (identity.quota.status === "limited") return "配额受限";
   return "可用";
 }

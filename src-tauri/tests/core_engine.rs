@@ -132,7 +132,7 @@ fn add_api_key_identity_rejects_empty_name() {
     assert!(empty_name
         .unwrap_err()
         .to_string()
-        .contains("账号名称不能为空"));
+        .contains("账号名不能为空"));
     assert!(engine.settings().identities.is_empty());
 }
 

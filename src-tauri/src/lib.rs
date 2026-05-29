@@ -24,7 +24,7 @@ pub fn run() {
             commands::run_daily_wake_now,
             commands::get_recent_log_entries,
             commands::open_identity_directory,
-            commands::patch_codex_plugins,
+            commands::install_codex_plugins,
             commands::open_main_window,
         ])
         .setup(|app| {

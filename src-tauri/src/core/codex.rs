@@ -19,9 +19,8 @@ use super::{ModexError, ModexResult};
 const DEFAULT_CODEX_APP_CLI: &str = "/Applications/Codex.app/Contents/Resources/codex";
 const MODEX_API_KEY_PROVIDER_ID: &str = "modex-api-key";
 const MODEX_API_KEY_PROVIDER_NAME: &str = "Modex API Key";
-const CODEX_PLUGIN_AUTH_GATE_ORIGINAL: &[u8] =
-    b"function e(e){return e!==`chatgpt`}export{e as t};";
-const CODEX_PLUGIN_AUTH_GATE_PATCHED: &[u8] = b"function e(e){return false        }export{e as t};";
+const KEYSTONE_MARKETPLACE_NAME: &str = "keystone-plugins";
+const KEYSTONE_PLUGIN_NAME: &str = "teambition-bugfix-pipeline";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProgramInvocation {
@@ -491,156 +490,213 @@ pub fn activate_codex_app(settings: &AppSettings) -> ModexResult<()> {
     }
 }
 
-#[cfg(target_os = "macos")]
-pub fn patch_codex_plugin_auth_gate_and_restart(settings: &AppSettings) -> ModexResult<()> {
-    let app_bundle = macos_codex_app_bundle_path(&settings.app_name);
-    if !app_bundle.exists() {
-        return Err(ModexError::from(format!(
-            "未找到 Codex App：{}",
-            app_bundle.display()
-        )));
+pub fn install_codex_plugin_and_restart(settings: &AppSettings) -> ModexResult<bool> {
+    install_codex_marketplace_plugin(settings, KEYSTONE_MARKETPLACE_NAME, KEYSTONE_PLUGIN_NAME)?;
+    match restart_codex_app_after_plugin_install(settings) {
+        Ok(()) => Ok(true),
+        Err(error) => {
+            eprintln!("Modex Codex plugin install restart skipped: {error}");
+            Ok(false)
+        }
+    }
+}
+
+pub fn install_codex_marketplace_plugin(
+    settings: &AppSettings,
+    marketplace_name: &str,
+    plugin_name: &str,
+) -> ModexResult<()> {
+    let config_path = settings.source_home.join("config.toml");
+    let existing_config = std::fs::read_to_string(&config_path).unwrap_or_default();
+
+    if !has_marketplace_config(&existing_config, marketplace_name) {
+        let marketplace_root =
+            find_local_marketplace_root(&settings.source_home, marketplace_name).ok_or_else(
+                || {
+                    ModexError::from(format!(
+                        "未找到 Codex marketplace `{marketplace_name}`。请先运行 `codex plugin marketplace add /path/to/marketplace-root`，且该目录需包含 `.agents/plugins/marketplace.json`。"
+                    ))
+                },
+            )?;
+        run_checked_invocation(
+            codex_plugin_marketplace_add_invocation(settings, &marketplace_root),
+            "注册 Codex 插件 marketplace 失败",
+        )?;
     }
 
-    let asar_path = app_bundle.join("Contents/Resources/app.asar");
-    if !asar_path.is_file() {
-        return Err(ModexError::from(format!(
-            "未找到 Codex app.asar：{}",
-            asar_path.display()
-        )));
+    let current_config = std::fs::read_to_string(&config_path).unwrap_or_default();
+    if !has_enabled_plugin_config(&current_config, plugin_name, marketplace_name)
+        || !plugin_cache_contains_manifest(&settings.source_home, marketplace_name, plugin_name)
+    {
+        run_checked_invocation(
+            codex_plugin_add_invocation(settings, plugin_name, marketplace_name),
+            "安装 Codex 插件失败",
+        )?;
     }
 
-    quit_codex_app_if_running(settings)?;
-    let _changed = patch_plugin_auth_gate_file(&asar_path)?;
     run_checked_invocation(
-        electron_fuses_disable_asar_integrity_invocation(&app_bundle),
-        "关闭 Electron asar 完整性校验失败",
+        codex_plugin_list_invocation(settings, marketplace_name),
+        "验证 Codex 插件安装状态失败",
     )?;
-    run_checked_invocation(
-        ad_hoc_codesign_app_invocation(&app_bundle),
-        "重新签名 Codex App 失败",
-    )?;
-    spawn_program(ProgramInvocation {
-        program: PathBuf::from("open"),
-        args: vec![app_bundle.display().to_string()],
-        envs: Vec::new(),
-    })?;
     Ok(())
 }
 
-#[cfg(not(target_os = "macos"))]
-pub fn patch_codex_plugin_auth_gate_and_restart(_settings: &AppSettings) -> ModexResult<()> {
-    Err(ModexError::from(
-        "Codex App 插件入口 patch 目前只支持 macOS。",
-    ))
+fn restart_codex_app_after_plugin_install(settings: &AppSettings) -> ModexResult<()> {
+    #[cfg(target_os = "macos")]
+    quit_codex_app_if_running(settings)?;
+    spawn_program(open_codex_app_launch_command(settings))
 }
 
-#[cfg(target_os = "macos")]
-fn macos_codex_app_bundle_path(app_name: &str) -> PathBuf {
-    let app_name = app_name.trim();
-    if app_name.contains('/') {
-        return PathBuf::from(app_name);
+fn codex_plugin_marketplace_add_invocation(
+    settings: &AppSettings,
+    marketplace_root: &Path,
+) -> ProgramInvocation {
+    ProgramInvocation {
+        program: resolve_codex_binary(&settings.codex_binary),
+        args: vec![
+            "plugin".to_string(),
+            "marketplace".to_string(),
+            "add".to_string(),
+            marketplace_root.display().to_string(),
+        ],
+        envs: build_codex_env(&settings.source_home),
     }
-    let app_name = app_name.strip_suffix(".app").unwrap_or(app_name);
-    PathBuf::from("/Applications").join(format!("{app_name}.app"))
 }
 
-fn patch_plugin_auth_gate_file(path: &Path) -> ModexResult<bool> {
-    let mut bytes = std::fs::read(path)?;
-    let changed = patch_plugin_auth_gate_bytes(&mut bytes)?;
-    if changed {
-        std::fs::write(path, bytes)?;
+fn codex_plugin_add_invocation(
+    settings: &AppSettings,
+    plugin_name: &str,
+    marketplace_name: &str,
+) -> ProgramInvocation {
+    ProgramInvocation {
+        program: resolve_codex_binary(&settings.codex_binary),
+        args: vec![
+            "plugin".to_string(),
+            "add".to_string(),
+            plugin_selector(plugin_name, marketplace_name),
+        ],
+        envs: build_codex_env(&settings.source_home),
     }
-    Ok(changed)
 }
 
-fn patch_plugin_auth_gate_bytes(bytes: &mut [u8]) -> ModexResult<bool> {
-    debug_assert_eq!(
-        CODEX_PLUGIN_AUTH_GATE_ORIGINAL.len(),
-        CODEX_PLUGIN_AUTH_GATE_PATCHED.len()
-    );
-    let original_count = count_subslice(bytes, CODEX_PLUGIN_AUTH_GATE_ORIGINAL);
-    let patched_count = count_subslice(bytes, CODEX_PLUGIN_AUTH_GATE_PATCHED);
+fn codex_plugin_list_invocation(
+    settings: &AppSettings,
+    marketplace_name: &str,
+) -> ProgramInvocation {
+    ProgramInvocation {
+        program: resolve_codex_binary(&settings.codex_binary),
+        args: vec![
+            "plugin".to_string(),
+            "list".to_string(),
+            "--marketplace".to_string(),
+            marketplace_name.to_string(),
+        ],
+        envs: build_codex_env(&settings.source_home),
+    }
+}
 
-    match (original_count, patched_count) {
-        (1, 0) => {
-            let offset = find_subslice(bytes, CODEX_PLUGIN_AUTH_GATE_ORIGINAL)
-                .ok_or_else(|| ModexError::from("未找到 Codex 插件入口判断逻辑"))?;
-            bytes[offset..offset + CODEX_PLUGIN_AUTH_GATE_PATCHED.len()]
-                .copy_from_slice(CODEX_PLUGIN_AUTH_GATE_PATCHED);
-            Ok(true)
+fn find_local_marketplace_root(codex_home: &Path, marketplace_name: &str) -> Option<PathBuf> {
+    [
+        codex_home
+            .join(".tmp")
+            .join("marketplaces")
+            .join(marketplace_name),
+        codex_home
+            .join("plugins")
+            .join("cache")
+            .join(marketplace_name),
+        codex_home
+            .join(".tmp")
+            .join("bundled-marketplaces")
+            .join(marketplace_name),
+    ]
+    .into_iter()
+    .find(|candidate| is_marketplace_root(candidate))
+}
+
+fn is_marketplace_root(path: &Path) -> bool {
+    path.join(".agents")
+        .join("plugins")
+        .join("marketplace.json")
+        .is_file()
+}
+
+fn has_marketplace_config(existing: &str, marketplace_name: &str) -> bool {
+    existing
+        .lines()
+        .any(|line| is_marketplace_table(line.trim(), marketplace_name))
+}
+
+fn has_enabled_plugin_config(existing: &str, plugin_name: &str, marketplace_name: &str) -> bool {
+    let selector = plugin_selector(plugin_name, marketplace_name);
+    let mut in_plugin_table = false;
+    for line in existing.lines() {
+        let trimmed = line.trim();
+        if is_table_header(trimmed) {
+            in_plugin_table = is_plugin_table(trimmed, &selector);
+            continue;
         }
-        (0, 1) => Ok(false),
-        (0, 0) => Err(ModexError::from(
-            "未找到可 patch 的 Codex 插件入口逻辑，当前 Codex 版本可能已变更。",
-        )),
-        _ => Err(ModexError::from(
-            "Codex 插件入口逻辑匹配结果不唯一，已取消 patch。",
-        )),
+        if in_plugin_table
+            && is_toml_key_line(line, "enabled")
+            && line
+                .split_once('=')
+                .is_some_and(|(_key, value)| value.trim() == "true")
+        {
+            return true;
+        }
     }
+    false
 }
 
-fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    if needle.is_empty() {
-        return Some(0);
+fn plugin_cache_contains_manifest(
+    codex_home: &Path,
+    marketplace_name: &str,
+    plugin_name: &str,
+) -> bool {
+    let cache_root = codex_home
+        .join("plugins")
+        .join("cache")
+        .join(marketplace_name)
+        .join(plugin_name);
+    if cache_root
+        .join(".codex-plugin")
+        .join("plugin.json")
+        .is_file()
+    {
+        return true;
     }
-    haystack
-        .windows(needle.len())
-        .position(|window| window == needle)
+    let Ok(entries) = std::fs::read_dir(cache_root) else {
+        return false;
+    };
+    entries.filter_map(Result::ok).any(|entry| {
+        entry
+            .path()
+            .join(".codex-plugin")
+            .join("plugin.json")
+            .is_file()
+    })
 }
 
-fn count_subslice(haystack: &[u8], needle: &[u8]) -> usize {
-    if needle.is_empty() {
-        return 0;
-    }
-    haystack
-        .windows(needle.len())
-        .filter(|window| *window == needle)
-        .count()
+fn is_marketplace_table(trimmed: &str, marketplace_name: &str) -> bool {
+    trimmed == format!("[marketplaces.{marketplace_name}]")
+        || trimmed == format!("[marketplaces.\"{marketplace_name}\"]")
 }
 
-#[cfg(target_os = "macos")]
-fn electron_fuses_disable_asar_integrity_invocation(app_bundle: &Path) -> ProgramInvocation {
-    let app_bundle = shell_quote(&app_bundle.to_string_lossy());
-    ProgramInvocation {
-        program: PathBuf::from("/bin/zsh"),
-        args: vec![
-            "-lc".to_string(),
-            format!(
-                "npx --yes @electron/fuses write --app {app_bundle} EnableEmbeddedAsarIntegrityValidation=off"
-            ),
-        ],
-        envs: Vec::new(),
-    }
+fn is_plugin_table(trimmed: &str, selector: &str) -> bool {
+    trimmed == format!("[plugins.\"{selector}\"]") || trimmed == format!("[plugins.{selector}]")
 }
 
-#[cfg(target_os = "macos")]
-fn shell_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', r#"'\''"#))
+fn plugin_selector(plugin_name: &str, marketplace_name: &str) -> String {
+    format!("{plugin_name}@{marketplace_name}")
 }
 
-#[cfg(target_os = "macos")]
-fn ad_hoc_codesign_app_invocation(app_bundle: &Path) -> ProgramInvocation {
-    ProgramInvocation {
-        program: PathBuf::from("codesign"),
-        args: vec![
-            "--force".to_string(),
-            "--deep".to_string(),
-            "--sign".to_string(),
-            "-".to_string(),
-            app_bundle.display().to_string(),
-        ],
-        envs: Vec::new(),
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn run_checked_invocation(invocation: ProgramInvocation, context: &str) -> ModexResult<()> {
+fn run_checked_invocation(invocation: ProgramInvocation, context: &str) -> ModexResult<String> {
     let output = Command::new(&invocation.program)
         .args(&invocation.args)
         .envs(invocation.envs)
         .output()?;
     if output.status.success() {
-        return Ok(());
+        return Ok(String::from_utf8_lossy(&output.stdout).trim().to_string());
     }
 
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
@@ -999,7 +1055,7 @@ mod auth_persistence_tests {
     }
 }
 
-#[cfg(all(test, target_os = "macos"))]
+#[cfg(test)]
 mod tests {
     use std::cell::RefCell;
     use std::path::{Path, PathBuf};
@@ -1008,6 +1064,7 @@ mod tests {
     use super::super::ModexError;
     use super::*;
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn macos_switch_does_not_prepare_or_launch_when_codex_refuses_to_quit() {
         let events = RefCell::new(Vec::new());
@@ -1035,6 +1092,7 @@ mod tests {
         assert_eq!(events.into_inner(), vec!["quit"]);
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn macos_switch_prepares_identity_only_after_codex_has_quit() {
         let events = RefCell::new(Vec::new());
@@ -1063,36 +1121,76 @@ mod tests {
     }
 
     #[test]
-    fn plugin_auth_gate_patch_replaces_original_gate_once() {
-        let mut bytes = b"before function e(e){return e!==`chatgpt`}export{e as t}; after".to_vec();
+    fn codex_plugin_add_invocation_uses_source_home() {
+        let mut settings = AppSettings::default_for_home(PathBuf::from("/tmp/modex-test"));
+        settings.codex_binary = "/opt/codex".to_string();
+        settings.source_home = PathBuf::from("/tmp/modex-test/source");
 
-        assert_eq!(patch_plugin_auth_gate_bytes(&mut bytes).unwrap(), true);
+        let invocation = codex_plugin_add_invocation(
+            &settings,
+            "teambition-bugfix-pipeline",
+            "keystone-plugins",
+        );
 
-        let next = String::from_utf8(bytes).unwrap();
-        assert!(!next.contains("function e(e){return e!==`chatgpt`}export{e as t};"));
-        assert!(next.contains("function e(e){return false        }export{e as t};"));
-    }
-
-    #[test]
-    fn plugin_auth_gate_patch_is_idempotent() {
-        let mut bytes = b"before function e(e){return false        }export{e as t}; after".to_vec();
-
-        assert_eq!(patch_plugin_auth_gate_bytes(&mut bytes).unwrap(), false);
-    }
-
-    #[test]
-    fn disable_asar_integrity_invocation_keeps_app_asar_loading_enabled() {
-        let invocation = electron_fuses_disable_asar_integrity_invocation(Path::new(
-            "/Applications/Codex App.app",
-        ));
-
-        assert_eq!(invocation.program, PathBuf::from("/bin/zsh"));
+        assert_eq!(invocation.program, PathBuf::from("/opt/codex"));
         assert_eq!(
             invocation.args,
             vec![
-                "-lc",
-                "npx --yes @electron/fuses write --app '/Applications/Codex App.app' EnableEmbeddedAsarIntegrityValidation=off"
+                "plugin".to_string(),
+                "add".to_string(),
+                "teambition-bugfix-pipeline@keystone-plugins".to_string()
             ]
+        );
+        assert_eq!(
+            invocation.envs,
+            vec![(
+                "CODEX_HOME".to_string(),
+                "/tmp/modex-test/source".to_string()
+            )]
+        );
+    }
+
+    #[test]
+    fn marketplace_and_plugin_config_detection_accepts_expected_tables() {
+        let config = r#"
+[marketplaces.keystone-plugins]
+source_type = "local"
+
+[plugins."teambition-bugfix-pipeline@keystone-plugins"]
+enabled = true
+"#;
+
+        assert!(has_marketplace_config(config, "keystone-plugins"));
+        assert!(has_enabled_plugin_config(
+            config,
+            "teambition-bugfix-pipeline",
+            "keystone-plugins"
+        ));
+        assert!(!has_enabled_plugin_config(
+            config,
+            "forge-pm",
+            "keystone-plugins"
+        ));
+    }
+
+    #[test]
+    fn local_marketplace_root_prefers_manifest_bearing_tmp_snapshot() {
+        let temp = tempfile::tempdir().unwrap();
+        let codex_home = temp.path();
+        let marketplace_root = codex_home
+            .join(".tmp")
+            .join("marketplaces")
+            .join("keystone-plugins");
+        std::fs::create_dir_all(marketplace_root.join(".agents/plugins")).unwrap();
+        std::fs::write(
+            marketplace_root.join(".agents/plugins/marketplace.json"),
+            r#"{"name":"keystone-plugins","plugins":[]}"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            find_local_marketplace_root(codex_home, "keystone-plugins").as_deref(),
+            Some(marketplace_root.as_path())
         );
     }
 
